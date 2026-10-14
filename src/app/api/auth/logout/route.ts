@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
-import { COOKIES, cookieOptions, tokenHash } from "@/lib/server/auth";
+import { COOKIES, tokenHash } from "@/lib/server/auth";
 import { json, route } from "@/lib/server/http";
+import { clearParentSessionCookies } from "@/lib/server/session";
 import { store } from "@/lib/server/store";
 
 export const runtime = "nodejs";
@@ -14,6 +15,6 @@ export const POST = route(async (req: NextRequest) => {
     });
   }
   const res = json({ ok: true });
-  res.cookies.set(COOKIES.parent, "", cookieOptions(0));
+  clearParentSessionCookies(res);
   return res;
 });

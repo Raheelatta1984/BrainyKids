@@ -1,17 +1,15 @@
 import type { NextRequest } from "next/server";
 import {
-  COOKIES,
-  cookieOptions,
   hashSecret,
   isValidEmail,
   newToken,
   normaliseEmail,
   tokenHash,
 } from "@/lib/server/auth";
-import { PARENT_SESSION_DAYS } from "@/lib/server/constants";
 import { error, json, readBody, route, str } from "@/lib/server/http";
 import { formatRecoveryCode, isValidPassword, newRecoveryCode, PASSWORD_MIN_LENGTH } from "@/lib/server/recovery";
-import { newId, sessionExpiry, store, trimSessions, type ParentRecord } from "@/lib/server/store";
+import { setParentSessionCookies } from "@/lib/server/session";
+import { newId, sessionExpiry, store, trimSessions, type ParentRecord, type SessionRecord } from "@/lib/server/store";
 import { parentView } from "@/lib/server/views";
 
 export const runtime = "nodejs";
@@ -31,32 +29,34 @@ export const POST = route(async (req: NextRequest) => {
   // password is forgotten, because BrainyKids does not send email.
   const recoveryCode = newRecoveryCode();
   const result = await store.mutate((doc) => {
-    if (doc.parents.some((p) => p.email === email)) return { taken: true, parent: null };
+    if (doc.parents.some((p) => p.email === email)) return { taken: true, parent: null, session: null };
+    const now = Date.now();
     const parent: ParentRecord = {
       id: newId(),
       name,
       email,
       passwordHash: hashSecret(password),
       recoveryHash: hashSecret(recoveryCode),
-      recoveryCreatedAt: Date.now(),
-      createdAt: Date.now(),
+      recoveryCreatedAt: now,
+      createdAt: now,
     };
-    doc.parents.push(parent);
-    doc.sessions.push({
+    const session: SessionRecord = {
       tokenHash: tokenHash(token),
       parentId: parent.id,
-      createdAt: Date.now(),
-      expiresAt: sessionExpiry(),
-    });
-    trimSessions(doc);
-    return { taken: false, parent };
+      createdAt: now,
+      expiresAt: sessionExpiry(now),
+    };
+    doc.parents.push(parent);
+    doc.sessions.push(session);
+    trimSessions(doc, now);
+    return { taken: false, parent, session };
   });
 
-  if (result.taken || !result.parent) {
+  if (result.taken || !result.parent || !result.session) {
     return error("An account with that email already exists. Try signing in instead.", 409);
   }
 
   const res = json({ parent: parentView(result.parent), recoveryCode: formatRecoveryCode(recoveryCode) });
-  res.cookies.set(COOKIES.parent, token, cookieOptions(PARENT_SESSION_DAYS * 24 * 60 * 60));
+  setParentSessionCookies(res, token, result.parent, result.session);
   return res;
 });

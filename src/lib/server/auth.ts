@@ -23,8 +23,45 @@ export function tokenHash(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
+function hmacKey(): Buffer {
+  const seed =
+    process.env.BRAINYKIDS_SECRET ||
+    process.env.DATABASE_URL ||
+    process.env.POSTGRES_URL ||
+    process.env.NEON_DATABASE_URL ||
+    "brainykids-serverless-continuity-v1";
+  return crypto.createHash("sha256").update(seed).digest();
+}
+
+/**
+ * Signs a small JSON payload with HMAC-SHA256 so another serverless instance
+ * in temporary-storage mode can verify it without a shared disk.
+ */
+export function signPayload(payload: unknown): string {
+  const body = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const sig = crypto.createHmac("sha256", hmacKey()).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+
+export function verifyPayload<T>(token: string | undefined | null): T | null {
+  if (!token || typeof token !== "string") return null;
+  const dot = token.indexOf(".");
+  if (dot <= 0) return null;
+  const body = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  try {
+    const expected = crypto.createHmac("sha256", hmacKey()).update(body).digest();
+    const actual = Buffer.from(sig, "base64url");
+    if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return null;
+    return JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as T;
+  } catch {
+    return null;
+  }
+}
+
 export const COOKIES = {
   parent: "bk_parent",
+  parentState: "bk_parent_state",
   device: "bk_device",
   pairing: "bk_pairing",
 } as const;

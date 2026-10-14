@@ -1008,6 +1008,50 @@ kbd {
   color: #8a6d00;
 }
 
+.storage-banner {
+  width: 100%;
+  max-width: 760px;
+  border-radius: 16px;
+  padding: 12px 14px;
+  margin: 4px 0;
+  background: #fff9db;
+  border: 1px solid #f59f00;
+  color: #7c5c00;
+  display: grid;
+  gap: 8px;
+}
+
+.storage-banner-text {
+  margin: 0;
+  font-weight: 700;
+}
+
+.storage-banner-actions {
+  justify-content: space-between;
+}
+
+.storage-check-btn {
+  padding: 6px 12px;
+  font-size: 0.85rem;
+}
+
+.storage-guide {
+  background: #fff;
+  color: var(--ink);
+  border-radius: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  font-weight: 400;
+}
+
+.storage-guide .steps {
+  color: var(--ink);
+  display: grid;
+  gap: 6px;
+}
+
 .forgot-link {
   justify-self: start;
   font-size: 0.9rem;

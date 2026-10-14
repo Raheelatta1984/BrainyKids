@@ -73,6 +73,10 @@ export type StorageState = {
   durable: boolean;
   location: string;
   notice: string | null;
+  /** Environment variable name used when connected to Postgres (e.g. DATABASE_URL, POSTGRES_URL, NEON_DATABASE_URL). */
+  envVar?: string | null;
+  /** True when running on an ephemeral/serverless filesystem (e.g. Vercel without Postgres attached). */
+  ephemeralHost?: boolean;
 };
 
 export type PairingStatus = "pending" | "approved" | "expired";

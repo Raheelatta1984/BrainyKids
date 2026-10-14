@@ -7,7 +7,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const POLL_MS = 1_200;
-const KEEPALIVE_MS = 15_000;
+const KEEPALIVE_MS = 8_000;
+/** Close cleanly before serverless function timeouts so EventSource reconnects smoothly. */
+const STREAM_MAX_MS = 18_000;
 
 /**
  * Realtime updates over Server-Sent Events.
@@ -29,10 +31,12 @@ export const GET = route(async (req: NextRequest) => {
 
   const cursorParam = Number.parseInt(req.nextUrl.searchParams.get("cursor") ?? "0", 10);
   let cursor = Number.isFinite(cursorParam) && cursorParam > 0 ? cursorParam : 0;
+  const durable = store.info().durable;
 
   const encoder = new TextEncoder();
   let interval: ReturnType<typeof setInterval> | null = null;
   let keepalive: ReturnType<typeof setInterval> | null = null;
+  let lifetime: ReturnType<typeof setTimeout> | null = null;
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -41,8 +45,10 @@ export const GET = route(async (req: NextRequest) => {
       const cleanup = () => {
         if (interval) clearInterval(interval);
         if (keepalive) clearInterval(keepalive);
+        if (lifetime) clearTimeout(lifetime);
         interval = null;
         keepalive = null;
+        lifetime = null;
       };
 
       const send = (event: string, data: unknown) => {
@@ -102,10 +108,17 @@ export const GET = route(async (req: NextRequest) => {
       };
 
       send("hello", { cursor, scope: scope.kidId ? "kid" : "parent" });
-      void pump();
+      void pump().then(() => {
+        // When running in temporary serverless storage, do not hold the lambda
+        // instance open with a long-lived stream.
+        if (!durable) close();
+      });
 
-      interval = setInterval(() => void pump(), POLL_MS);
-      keepalive = setInterval(() => send("ping", {}), KEEPALIVE_MS);
+      if (durable) {
+        interval = setInterval(() => void pump(), POLL_MS);
+        keepalive = setInterval(() => send("ping", {}), KEEPALIVE_MS);
+        lifetime = setTimeout(() => close(), STREAM_MAX_MS);
+      }
 
       req.signal.addEventListener("abort", () => {
         closed = true;
@@ -115,6 +128,7 @@ export const GET = route(async (req: NextRequest) => {
     cancel() {
       if (interval) clearInterval(interval);
       if (keepalive) clearInterval(keepalive);
+      if (lifetime) clearTimeout(lifetime);
     },
   });
 

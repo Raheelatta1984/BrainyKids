@@ -1,10 +1,11 @@
 import type { NextRequest } from "next/server";
 import { COOKIES, cookieOptions, deviceLabel, newToken, tokenHash } from "@/lib/server/auth";
-import { DEVICE_DAYS, PARENT_SESSION_DAYS } from "@/lib/server/constants";
+import { DEVICE_DAYS } from "@/lib/server/constants";
 import { error, json, readBody, route, str } from "@/lib/server/http";
 import { findPasskeyByCredentialId, takeChallenge } from "@/lib/server/passkeys";
 import { linkDevice } from "@/lib/server/service";
-import { pushEvent, sessionExpiry, store } from "@/lib/server/store";
+import { setParentSessionCookies } from "@/lib/server/session";
+import { pushEvent, sessionExpiry, store, type ParentRecord, type SessionRecord } from "@/lib/server/store";
 import { relyingParty, verifyAssertion, WebAuthnError, type WebAuthnResponse } from "@/lib/server/webauthn";
 import { kidView } from "@/lib/server/views";
 
@@ -30,11 +31,18 @@ export const POST = route(async (req: NextRequest) => {
 
   const outcome = await store.mutate((doc) => {
     const challenge = takeChallenge(doc, { id: challengeId, purpose: "login" });
-    if (!challenge) return { failed: "That sign-in attempt expired. Please try again.", role: null as null | "parent" | "kid" };
+    if (!challenge) {
+      return {
+        failed: "That sign-in attempt expired. Please try again.",
+        role: null as null | "parent" | "kid",
+        parent: null as ParentRecord | null,
+        session: null as SessionRecord | null,
+      };
+    }
 
     const rawId = credential.rawId ?? credential.id ?? "";
     const passkey = findPasskeyByCredentialId(doc.passkeys, rawId);
-    if (!passkey) return { failed: "That fingerprint is not set up for BrainyKids.", role: null };
+    if (!passkey) return { failed: "That fingerprint is not set up for BrainyKids.", role: null, parent: null, session: null };
 
     try {
       const { counter } = verifyAssertion({
@@ -52,12 +60,14 @@ export const POST = route(async (req: NextRequest) => {
       return {
         failed: cause instanceof WebAuthnError ? cause.message : "That fingerprint could not be checked. Please try again.",
         role: null,
+        parent: null,
+        session: null,
       };
     }
 
     if (passkey.kidId) {
       const kid = doc.kids.find((k) => k.id === passkey.kidId);
-      if (!kid) return { failed: "That child profile no longer exists.", role: null };
+      if (!kid) return { failed: "That child profile no longer exists.", role: null, parent: null, session: null };
       linkDevice(doc, kid, label, deviceToken);
       pushEvent(doc, {
         type: "device.linked",
@@ -65,18 +75,20 @@ export const POST = route(async (req: NextRequest) => {
         kidId: kid.id,
         payload: { kidName: kid.name, label, method: "fingerprint" },
       });
-      return { failed: null, role: "kid" as const };
+      return { failed: null, role: "kid" as const, parent: null, session: null };
     }
 
     const parent = doc.parents.find((p) => p.id === passkey.parentId);
-    if (!parent) return { failed: "That parent account no longer exists.", role: null };
-    doc.sessions.push({
+    if (!parent) return { failed: "That parent account no longer exists.", role: null, parent: null, session: null };
+    const now = Date.now();
+    const session: SessionRecord = {
       tokenHash: tokenHash(sessionToken),
       parentId: parent.id,
-      createdAt: Date.now(),
-      expiresAt: sessionExpiry(),
-    });
-    return { failed: null, role: "parent" as const };
+      createdAt: now,
+      expiresAt: sessionExpiry(now),
+    };
+    doc.sessions.push(session);
+    return { failed: null, role: "parent" as const, parent, session };
   });
 
   if (outcome.failed || !outcome.role) return error(outcome.failed ?? "Fingerprint sign-in failed.", 401);
@@ -84,7 +96,9 @@ export const POST = route(async (req: NextRequest) => {
   const doc = await store.read();
   if (outcome.role === "parent") {
     const res = json({ role: "parent" as const });
-    res.cookies.set(COOKIES.parent, sessionToken, cookieOptions(PARENT_SESSION_DAYS * 24 * 60 * 60));
+    if (outcome.parent && outcome.session) {
+      setParentSessionCookies(res, sessionToken, outcome.parent, outcome.session);
+    }
     return res;
   }
 

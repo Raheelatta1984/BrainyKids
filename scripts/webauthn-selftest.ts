@@ -22,6 +22,8 @@ import {
   WebAuthnError,
   type WebAuthnResponse,
 } from "../src/lib/server/webauthn";
+import { normaliseDatabaseConfig, resolveDatabaseEnv } from "../src/lib/server/store";
+import { signPayload, verifyPayload } from "../src/lib/server/auth";
 
 // ---------------------------------------------------------------- CBOR writer --
 
@@ -374,6 +376,35 @@ roundTrip("ec", "iPhone / Android style credential (ES256)");
 roundTrip("rsa", "Windows Hello style credential (RS256)");
 counterRules();
 relyingPartyFromRequest();
+
+function neonAndVercelDatabaseChecks() {
+  console.log("\nNeon / Vercel Postgres connection string normalisation");
+  const neonPsql = normaliseDatabaseConfig(
+    "psql 'postgresql://neondb_owner:npg_abc123@ep-cool-frog-123456-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require'",
+  );
+  check("strips psql snippet wrapper and quotes", neonPsql.valid && neonPsql.safeLocation === "ep-cool-frog-123456-pooler.us-east-2.aws.neon.tech/neondb");
+  check("enables SCRAM channel binding when channel_binding=require is present", neonPsql.enableChannelBinding === true);
+  check("adds uselibpqcompat=true for sslmode=require", neonPsql.connectionString.includes("uselibpqcompat=true"));
+
+  const envLine = normaliseDatabaseConfig(
+    'DATABASE_URL="postgresql://user:pass@ep-test.us-east-2.aws.neon.tech/neondb"',
+  );
+  check("strips accidental KEY= prefix and adds sslmode=require for Neon host", envLine.valid && envLine.connectionString.includes("sslmode=require"));
+
+  const savedPgUrl = process.env.POSTGRES_URL;
+  process.env.POSTGRES_URL = "postgresql://user:pass@ep-vercel.us-east-2.aws.neon.tech/verceldb?sslmode=require";
+  const resolved = resolveDatabaseEnv();
+  check("discovers POSTGRES_URL set by Vercel Storage integration", resolved?.envVar === "POSTGRES_URL");
+  if (savedPgUrl === undefined) delete process.env.POSTGRES_URL;
+  else process.env.POSTGRES_URL = savedPgUrl;
+
+  const token = signPayload({ parentId: "p-1", role: "parent" });
+  const verified = verifyPayload<{ parentId: string; role: string }>(token);
+  check("serverless continuity HMAC round-trips", verified?.parentId === "p-1");
+  check("tampered continuity HMAC is rejected", verifyPayload(`${token}x`) === null);
+}
+
+neonAndVercelDatabaseChecks();
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

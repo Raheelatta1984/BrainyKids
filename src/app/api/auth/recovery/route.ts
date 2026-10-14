@@ -1,16 +1,17 @@
 import type { NextRequest } from "next/server";
-import { COOKIES, cookieOptions, hashSecret, newToken, normaliseEmail, tokenHash, verifySecret } from "@/lib/server/auth";
-import { PARENT_SESSION_DAYS } from "@/lib/server/constants";
+import { hashSecret, newToken, normaliseEmail, tokenHash, verifySecret } from "@/lib/server/auth";
 import { error, json, readBody, route, str } from "@/lib/server/http";
 import {
   formatRecoveryCode,
   isValidPassword,
+  MAX_RECOVERY_ATTEMPTS,
   newRecoveryCode,
   normaliseRecoveryCode,
   PASSWORD_MIN_LENGTH,
+  RECOVERY_LOCK_MS,
 } from "@/lib/server/recovery";
-import { MAX_RECOVERY_ATTEMPTS, RECOVERY_LOCK_MS } from "@/lib/server/recovery";
-import { sessionExpiry, store, trimSessions } from "@/lib/server/store";
+import { setParentSessionCookies } from "@/lib/server/session";
+import { sessionExpiry, store, trimSessions, type SessionRecord } from "@/lib/server/store";
 import { parentView } from "@/lib/server/views";
 
 export const runtime = "nodejs";
@@ -41,9 +42,9 @@ export const POST = route(async (req: NextRequest) => {
   const outcome = await store.mutate((doc) => {
     trimSessions(doc, now);
     const parent = doc.parents.find((p) => p.email === email);
-    if (!parent || !parent.recoveryHash) return { ok: false as const, parent: null, locked: false };
+    if (!parent || !parent.recoveryHash) return { ok: false as const, parent: null, session: null, locked: false };
     if (parent.recoveryLockedUntil && parent.recoveryLockedUntil > now) {
-      return { ok: false as const, parent: null, locked: true };
+      return { ok: false as const, parent: null, session: null, locked: true };
     }
 
     if (!verifySecret(code, parent.recoveryHash)) {
@@ -52,7 +53,7 @@ export const POST = route(async (req: NextRequest) => {
         parent.recoveryLockedUntil = now + RECOVERY_LOCK_MS;
         parent.recoveryFailures = 0;
       }
-      return { ok: false as const, parent: null, locked: false };
+      return { ok: false as const, parent: null, session: null, locked: false };
     }
 
     parent.passwordHash = hashSecret(password);
@@ -63,16 +64,17 @@ export const POST = route(async (req: NextRequest) => {
     // Anyone who was signed in with the old password is signed out; this device
     // gets a session of its own below.
     doc.sessions = doc.sessions.filter((s) => s.parentId !== parent.id);
-    doc.sessions.push({
+    const session: SessionRecord = {
       tokenHash: tokenHash(token),
       parentId: parent.id,
       createdAt: now,
       expiresAt: sessionExpiry(now),
-    });
-    return { ok: true as const, parent, locked: false };
+    };
+    doc.sessions.push(session);
+    return { ok: true as const, parent, session, locked: false };
   });
 
-  if (!outcome.ok || !outcome.parent) {
+  if (!outcome.ok || !outcome.parent || !outcome.session) {
     return error(
       outcome.locked
         ? "Too many recovery attempts. Please wait 15 minutes and try again."
@@ -82,6 +84,6 @@ export const POST = route(async (req: NextRequest) => {
   }
 
   const res = json({ parent: parentView(outcome.parent), recoveryCode: formatRecoveryCode(nextCode) });
-  res.cookies.set(COOKIES.parent, token, cookieOptions(PARENT_SESSION_DAYS * 24 * 60 * 60));
+  setParentSessionCookies(res, token, outcome.parent, outcome.session);
   return res;
 });
