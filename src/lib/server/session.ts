@@ -1,10 +1,15 @@
 import type { NextRequest, NextResponse } from "next/server";
 import { COOKIES, cookieOptions, normaliseCode, signPayload, tokenHash, verifyPayload } from "./auth";
-import { PARENT_SESSION_DAYS } from "./constants";
-import { store, type DbDoc, type DeviceRecord, type KidRecord, type ParentRecord, type PairingRecord, type SessionRecord } from "./store";
+import { DEVICE_DAYS, PARENT_SESSION_DAYS } from "./constants";
+import { isKidDeleted, store, type DbDoc, type DeviceRecord, type KidRecord, type ParentRecord, type PairingRecord, type SessionRecord } from "./store";
 
 export type ParentAuth = { parent: ParentRecord; session: SessionRecord };
-export type DeviceAuth = { device: DeviceRecord; kid: KidRecord };
+export type DeviceAuth = {
+  device: DeviceRecord;
+  kid: KidRecord;
+  /** True when the link was rebuilt from the device's own signed cookie. */
+  restored?: boolean;
+};
 
 type ParentStateBackup = {
   parent: ParentRecord;
@@ -84,16 +89,106 @@ export async function parentAuth(req: NextRequest, doc?: DbDoc): Promise<ParentA
   return null;
 }
 
+/**
+ * A slim copy of a kid device link, stored in a signed cookie on the device.
+ *
+ * Only the facts needed to rebuild the session are kept (no activity history, no
+ * chat) so the cookie stays far inside the ~4 KB browser limit. It is the safety
+ * net for hosts whose storage is temporary: the child stays signed in even when
+ * the server forgot the device between two requests.
+ */
+type KidDeviceBackup = {
+  token: string;
+  device: DeviceRecord;
+  kid: KidRecord;
+  parent: ParentRecord | null;
+};
+
+export const DEVICE_BACKUP_VERSION = 1;
+
+function slimKid(kid: KidRecord): KidRecord {
+  return {
+    ...kid,
+    // Keep the last few activity lines only: this cookie must stay small.
+    activity: (kid.activity ?? []).slice(-3),
+  };
+}
+
+function slimParent(parent: ParentRecord | undefined | null): ParentRecord | null {
+  if (!parent) return null;
+  return {
+    id: parent.id,
+    name: parent.name,
+    email: parent.email,
+    passwordHash: parent.passwordHash,
+    createdAt: parent.createdAt,
+    recoveryHash: parent.recoveryHash,
+    recoveryCreatedAt: parent.recoveryCreatedAt,
+  };
+}
+
+/** Sets the device cookie *and* the signed backup, so a wiped server can recover the link. */
+export function setDeviceSessionCookies(
+  res: NextResponse,
+  token: string,
+  device: DeviceRecord,
+  kid: KidRecord,
+  parent?: ParentRecord | null,
+  req?: Request | null,
+) {
+  const maxAge = DEVICE_DAYS * 24 * 60 * 60;
+  res.cookies.set(COOKIES.device, token, cookieOptions(maxAge, req));
+  const backup: KidDeviceBackup = { token, device, kid: slimKid(kid), parent: slimParent(parent) };
+  res.cookies.set(COOKIES.deviceState, signPayload(backup), cookieOptions(maxAge, req));
+}
+
+export function clearDeviceSessionCookies(res: NextResponse, req?: Request | null) {
+  res.cookies.set(COOKIES.device, "", cookieOptions(0, req));
+  res.cookies.set(COOKIES.deviceState, "", cookieOptions(0, req));
+}
+
 export async function deviceAuth(req: NextRequest, doc?: DbDoc): Promise<DeviceAuth | null> {
   const raw = req.cookies.get(COOKIES.device)?.value;
   if (!raw) return null;
   const hash = tokenHash(raw);
   const current = doc ?? (await store.read());
   const device = current.devices.find((d) => d.tokenHash === hash);
-  if (!device) return null;
-  const kid = current.kids.find((k) => k.id === device.kidId);
-  if (!kid) return null;
-  return { device, kid };
+  const kid = device ? current.kids.find((k) => k.id === device.kidId) : undefined;
+  if (device && kid) return { device, kid };
+
+  // The stored link is gone. On temporary storage another instance (or a fresh
+  // temporary folder) simply does not have it, so rebuild it from the device's
+  // own signed cookie instead of signing the child out.
+  if (store.info().durable && !device) return null;
+
+  const backup = verifyPayload<KidDeviceBackup>(req.cookies.get(COOKIES.deviceState)?.value);
+  if (!backup || backup.token !== raw || backup.device?.tokenHash !== hash) return null;
+  if (backup.device.kidId && backup.kid?.id !== backup.device.kidId) return null;
+  // A parent deleting a child must stay deleted, even on temporary storage.
+  if (backup.kid?.id && isKidDeleted(current, backup.kid.id)) return null;
+
+  const restore = (target: DbDoc) => {
+    if (!target.devices.some((d) => d.tokenHash === hash)) target.devices.push(backup.device);
+    const existingKid = target.kids.find((k) => k.id === backup.kid.id);
+    if (!existingKid) target.kids.push(backup.kid);
+    else existingKid.lastSeenAt = Math.max(existingKid.lastSeenAt ?? 0, backup.kid.lastSeenAt ?? 0);
+    if (backup.parent) {
+      const existingParent = target.parents.find((p) => p.id === backup.parent!.id);
+      if (!existingParent) target.parents.push(backup.parent);
+    }
+    return { device: target.devices.find((d) => d.tokenHash === hash)!, kid: target.kids.find((k) => k.id === backup.kid.id)! };
+  };
+
+  // Only rebuild when the stored records really are missing (a parent who
+  // signed the device out on a durable database must stay signed out).
+  if (store.info().durable) {
+    const liveDevice = current.devices.find((d) => d.tokenHash === hash);
+    if (liveDevice) return null;
+  }
+
+  const restored = await store.mutate((fresh) => restore(fresh));
+  if (doc) restore(doc);
+  return { device: restored.device, kid: restored.kid, restored: true };
 }
 
 /** Pairing credentials left on a device that has started "link this device". */

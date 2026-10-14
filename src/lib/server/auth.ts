@@ -63,14 +63,52 @@ export const COOKIES = {
   parent: "bk_parent",
   parentState: "bk_parent_state",
   device: "bk_device",
+  /** Signed copy of a kid device link, so a temporary server can recognise it again. */
+  deviceState: "bk_device_state",
   pairing: "bk_pairing",
 } as const;
 
-export function cookieOptions(maxAgeSeconds: number) {
+/**
+ * True when this request arrived over https.
+ *
+ * This matters a lot: a cookie marked `secure` is thrown away by the browser on
+ * a plain-http address, which looks exactly like “the kid keeps being signed
+ * out” and “the QR code keeps expiring”. Behind a proxy (Vercel, Nginx) the
+ * original protocol is in `x-forwarded-proto`.
+ */
+export function requestIsSecure(req?: Request | null): boolean {
+  if (!req) return process.env.NODE_ENV === "production";
+  const forwarded = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  if (forwarded) return forwarded === "https";
+  try {
+    return new URL(req.url).protocol === "https:";
+  } catch {
+    return process.env.NODE_ENV === "production";
+  }
+}
+
+/** Where the request thinks it is, used in diagnostics (never a secret). */
+export function requestProtocol(req?: Request | null): string {
+  if (!req) return "unknown";
+  const forwarded = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  if (forwarded) return forwarded;
+  try {
+    return new URL(req.url).protocol.replace(":", "");
+  } catch {
+    return "unknown";
+  }
+}
+
+export function requestHost(req?: Request | null): string {
+  if (!req) return "unknown";
+  return req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "unknown";
+}
+
+export function cookieOptions(maxAgeSeconds: number, req?: Request | null) {
   return {
     httpOnly: true,
     sameSite: "lax" as const,
-    secure: process.env.NODE_ENV === "production",
+    secure: requestIsSecure(req),
     path: "/",
     maxAge: maxAgeSeconds,
   };

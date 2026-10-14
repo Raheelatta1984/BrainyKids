@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { normaliseCode } from "@/lib/server/auth";
 import { error, json, route } from "@/lib/server/http";
+import { logBehaviour } from "@/lib/server/diagnostics";
 import { parentAuth } from "@/lib/server/session";
 import { store } from "@/lib/server/store";
 import { pairingView } from "@/lib/server/views";
@@ -18,7 +19,20 @@ export const GET = route(async (req: NextRequest) => {
 
   const doc = await store.read();
   const pairing = doc.pairings.find((p) => p.code === code);
-  if (!pairing) return json({ found: false, status: "unknown" });
+  if (!pairing) {
+    const storage = store.info();
+    void logBehaviour(
+      {
+        code: "pairing.lookup_failed",
+        parentId: auth.parent.id,
+        role: "parent",
+        vars: { code, found: false, status: "unknown", driver: storage.driver, durable: storage.durable },
+        context: { code, storage: storage.driver, durable: storage.durable, location: storage.location },
+      },
+      { throttleKey: `lookup-${code}` },
+    ).catch(() => undefined);
+    return json({ found: false, status: "unknown" });
+  }
 
   const view = pairingView(doc, pairing);
   if (view.status !== "pending") {

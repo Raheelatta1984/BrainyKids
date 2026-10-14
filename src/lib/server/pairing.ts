@@ -37,6 +37,15 @@ export async function checkPairing(req: NextRequest): Promise<PairingCheck> {
     const kid = fresh.kids.find((k) => k.id === current.kidId);
     if (!kid) return { status: "expired" as const };
     const token = current.handoffToken ?? undefined;
+    // An approval is only good while the link it created still exists. If the
+    // device record is gone and there is no handoff token left to rebuild it,
+    // somebody signed this device out: answer “expired” so the child's screen
+    // starts a fresh code instead of flipping between “approved” and the
+    // sign-in screen (the “it keeps signing out” loop).
+    if (current.deviceId && !token && !fresh.devices.some((d) => d.id === current.deviceId)) {
+      current.status = "expired";
+      return { status: "expired" as const };
+    }
     current.handoffToken = null;
     if (current.deviceId) {
       const device = fresh.devices.find((d) => d.id === current.deviceId);

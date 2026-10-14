@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { json, route } from "@/lib/server/http";
-import { checkStorageHealth } from "@/lib/server/store";
+import { noteStorageState } from "@/lib/server/diagnostics";
+import { checkStorageHealth, store } from "@/lib/server/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +13,7 @@ export const dynamic = "force-dynamic";
  */
 export const GET = route(async (req: NextRequest) => {
   void req;
+  noteStorageState(store.info());
   const status = await checkStorageHealth();
   return json(status);
 });

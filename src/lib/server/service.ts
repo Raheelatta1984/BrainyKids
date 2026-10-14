@@ -1,7 +1,7 @@
 import { newToken, tokenHash } from "./auth";
 import { HEARTBEAT_MS } from "./constants";
-import { newId, pushEvent, type DbDoc, type DeviceRecord, type KidRecord, type ParentRecord } from "./store";
-import { addActivity } from "./views";
+import { appendChat, newId, pushEvent, type ChatRecord, type DbDoc, type DeviceRecord, type KidRecord, type ParentRecord } from "./store";
+import { addActivity, MAX_CHAT_CHARS, markChatSeen } from "./views";
 import type { Gender, Level, Theme } from "@/lib/types";
 import { QUESTIONS } from "@/lib/quiz-data";
 import { levelQuestionCount, matchesAnswer, tracksForAge } from "@/lib/quiz-logic";
@@ -224,6 +224,69 @@ export function resolveScreenTime(doc: DbDoc, kid: KidRecord, action: "approve" 
     });
   }
   return amount;
+}
+
+export type SendChatResult = { ok: true; message: ChatRecord } | { ok: false; error: string };
+
+/**
+ * Sends one chat message between a parent and a child. A “voice note” is the
+ * same text, dictated on the sender's device by speaking (kind: "voice"), so the
+ * other side can read it and have it read out loud — no audio files to store.
+ */
+export function sendChatMessage(
+  doc: DbDoc,
+  kid: KidRecord,
+  from: "parent" | "kid",
+  text: string,
+  kind: "text" | "voice" = "text",
+): SendChatResult {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) return { ok: false, error: "Type or say something first." };
+  if (clean.length > MAX_CHAT_CHARS) return { ok: false, error: `Messages can be up to ${MAX_CHAT_CHARS} characters.` };
+  const message: ChatRecord = {
+    id: newId(),
+    parentId: kid.parentId,
+    kidId: kid.id,
+    from,
+    text: clean,
+    kind,
+    at: Date.now(),
+    seen: false,
+  };
+  appendChat(doc, message);
+  kid.lastSeenAt = from === "kid" ? message.at : kid.lastSeenAt;
+  addActivity(kid, {
+    kind: "cheer",
+    text: from === "parent" ? `You sent: “${clean}”` : `${kid.name} said: “${clean}”`,
+  });
+  pushEvent(doc, {
+    type: "chat.message",
+    parentId: kid.parentId,
+    kidId: kid.id,
+    payload: {
+      kidName: kid.name,
+      messageId: message.id,
+      from,
+      text: clean,
+      kind,
+      at: message.at,
+    },
+  });
+  return { ok: true, message };
+}
+
+/** Marks the other side's messages as seen when a chat panel is open. */
+export function markChatRead(doc: DbDoc, kid: KidRecord, viewer: "parent" | "kid"): number {
+  const changed = markChatSeen(doc, kid.id, viewer);
+  if (changed > 0) {
+    pushEvent(doc, {
+      type: "chat.message",
+      parentId: kid.parentId,
+      kidId: kid.id,
+      payload: { kidName: kid.name, seenBy: viewer, count: changed },
+    });
+  }
+  return changed;
 }
 
 export function sendCheer(doc: DbDoc, kid: KidRecord, message: string) {

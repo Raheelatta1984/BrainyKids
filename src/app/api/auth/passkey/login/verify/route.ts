@@ -1,10 +1,10 @@
 import type { NextRequest } from "next/server";
-import { COOKIES, cookieOptions, deviceLabel, newToken, tokenHash } from "@/lib/server/auth";
-import { DEVICE_DAYS } from "@/lib/server/constants";
+import { deviceLabel, newToken, tokenHash } from "@/lib/server/auth";
 import { error, json, readBody, route, str } from "@/lib/server/http";
+import { logBehaviour } from "@/lib/server/diagnostics";
 import { findPasskeyByCredentialId, takeChallenge } from "@/lib/server/passkeys";
 import { linkDevice } from "@/lib/server/service";
-import { setParentSessionCookies } from "@/lib/server/session";
+import { clearDeviceSessionCookies, setDeviceSessionCookies, setParentSessionCookies } from "@/lib/server/session";
 import { pushEvent, sessionExpiry, store, type ParentRecord, type SessionRecord } from "@/lib/server/store";
 import { relyingParty, verifyAssertion, WebAuthnError, type WebAuthnResponse } from "@/lib/server/webauthn";
 import { kidView } from "@/lib/server/views";
@@ -104,7 +104,32 @@ export const POST = route(async (req: NextRequest) => {
 
   const device = doc.devices.find((d) => d.tokenHash === tokenHash(deviceToken));
   const kid = device ? doc.kids.find((k) => k.id === device.kidId) : undefined;
-  const res = json({ role: "kid" as const, kid: kid ? kidView(doc, kid) : null });
-  res.cookies.set(COOKIES.device, deviceToken, cookieOptions(DEVICE_DAYS * 24 * 60 * 60));
+  const parentOfKidRecord = kid ? doc.parents.find((p) => p.id === kid.parentId) : undefined;
+  const res = json({ role: "kid" as const, kid: kid ? kidView(doc, kid, Date.now(), "kid") : null });
+  if (device && kid) {
+    setDeviceSessionCookies(res, deviceToken, device, kid, parentOfKidRecord ?? null, req);
+    void logBehaviour(
+      {
+        code: "kid.session.linked",
+        parentId: kid.parentId,
+        kidId: kid.id,
+        kidName: kid.name,
+        deviceId: device.id,
+        role: "kid",
+        vars: {
+          kidName: kid.name,
+          deviceLabel: device.label,
+          kidId: kid.id,
+          deviceId: device.id,
+          driver: store.info().driver,
+          durable: store.info().durable,
+        },
+        context: { trigger: "fingerprint", label: device.label },
+      },
+      { throttleKey: device.id, force: true },
+    ).catch(() => undefined);
+  } else {
+    clearDeviceSessionCookies(res, req);
+  }
   return res;
 });

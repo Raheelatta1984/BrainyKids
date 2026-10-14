@@ -5,6 +5,8 @@ import ParentAuth, { type ParentAuthMode } from "@/components/ParentAuth";
 import ForgotPassword from "@/components/ForgotPassword";
 import KidDeviceLink from "@/components/KidDeviceLink";
 import StorageBanner from "@/components/StorageBanner";
+import { DEFAULT_SETTINGS, resolveSettings } from "@/lib/settings";
+import type { FamilySettings } from "@/lib/types";
 
 type View = "choose" | "parent" | "kid" | "recovery";
 
@@ -15,6 +17,7 @@ export default function AuthGateway({
   onRecoveryCode,
   notice,
   storageNotice,
+  settings,
 }: {
   hasAccounts: boolean;
   onDone: () => void;
@@ -22,9 +25,11 @@ export default function AuthGateway({
   onRecoveryCode: (code: string) => void;
   notice?: string | null;
   storageNotice?: string | null;
+  settings?: FamilySettings;
 }) {
   const [view, setView] = useState<View>("choose");
   const [mode, setMode] = useState<ParentAuthMode>(hasAccounts ? "login" : "signup");
+  const familySettings = resolveSettings(settings ?? DEFAULT_SETTINGS);
 
   return (
     <main className="gateway">
@@ -85,6 +90,7 @@ export default function AuthGateway({
             parentExists={hasAccounts}
             onLinked={onDone}
             onParentInstead={() => setView("parent")}
+            settings={familySettings}
           />
         )}
       </section>

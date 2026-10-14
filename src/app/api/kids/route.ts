@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { hashSecret, isValidPin, isValidUsername, normaliseUsername } from "@/lib/server/auth";
 import { error, json, num, readBody, route, str } from "@/lib/server/http";
+import { recordBehaviour } from "@/lib/server/diagnostics";
 import { parentAuth } from "@/lib/server/session";
 import { createKidRecord, findKidByUsername } from "@/lib/server/service";
 import { pushEvent, store } from "@/lib/server/store";
@@ -44,6 +45,21 @@ export const POST = route(async (req: NextRequest) => {
       kidId: kid.id,
       payload: { kidName: kid.name, username: kid.username },
     });
+    // Written to the behavioural log too, so a later review can tell “a parent
+    // added this child” apart from “this child's profile went missing”.
+    recordBehaviour(
+      doc,
+      {
+        code: "kid.profile.created",
+        role: "parent",
+        parentId: auth.parent.id,
+        kidId: kid.id,
+        kidName: kid.name,
+        vars: { kidName: kid.name, kidId: kid.id, age: kid.age, theme: kid.theme, parentId: auth.parent.id },
+        context: { age: kid.age, theme: kid.theme, username: kid.username },
+      },
+      { source: "server" },
+    );
     return { taken: false, kid };
   });
 

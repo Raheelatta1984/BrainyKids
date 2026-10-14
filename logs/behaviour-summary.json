@@ -1,0 +1,151 @@
+{
+  "generatedAt": "2026-10-14T12:19:42.441Z",
+  "sources": [
+    ".data/behaviour.jsonl",
+    "logs/inbox/2026-10-14-dev-server.jsonl",
+    "logs/inbox/2026-10-14-temporary-storage.jsonl"
+  ],
+  "settings": {
+    "timeZone": "Australia/Sydney",
+    "locale": "ur",
+    "dateFormat": "dmy",
+    "timeFormat": "24",
+    "kidVoiceOver": true,
+    "parentVoiceOver": false,
+    "kidDictation": true
+  },
+  "summary": {
+    "total": 21,
+    "critical": 7,
+    "warning": 5,
+    "info": 9,
+    "groups": [
+      {
+        "code": "kid.session.lost",
+        "area": "session",
+        "severity": "critical",
+        "count": 4,
+        "firstAt": 1791980061908,
+        "lastAt": 1791980358320,
+        "layman": "This child's device lost the sign-in, so the child was shown the sign-in screen again (this is the “keeps signing out” report).",
+        "technical": "device cookie present but no device record in storage (reason=no matching device record for the cookie that was sent): cookiePresent=true deviceFound=false kidFound=false storage=unknown durable=true location=/home/user/BrainyKids/.data",
+        "fix": "Attach a permanent database (DATABASE_URL on Vercel) so device links survive a restart, then link the device again. Until then, each new server instance starts from an empty temporary file.",
+        "affectedKids": []
+      },
+      {
+        "code": "storage.temporary_folder",
+        "area": "storage",
+        "severity": "critical",
+        "count": 3,
+        "firstAt": 1791980184472,
+        "lastAt": 1791980206512,
+        "layman": "BrainyKids cannot save permanently on this server, so accounts, children and device links can disappear when the server restarts.",
+        "technical": "file driver not durable: location=/tmp/brainykids-data reason=This server's project folder is read-only, so BrainyKids is keeping accounts in a temporary folder. They can disappear when the server restarts — attach a Neon or Vercel Postgres database (DATABASE_URL) for permanent storage. driver=file",
+        "fix": "Attach a Neon/Vercel Postgres database (DATABASE_URL) and redeploy. This one change fixes sign-outs and missing children together.",
+        "affectedKids": []
+      },
+      {
+        "code": "kid.session.heartbeat_unlinked",
+        "area": "session",
+        "severity": "warning",
+        "count": 1,
+        "firstAt": 1791980055868,
+        "lastAt": 1791980055868,
+        "layman": "This child's device is no longer linked on the server, so the app returned to the sign-in screen.",
+        "technical": "heartbeat answered 401 unlinked: deviceId=- kidId=- durable=true reason=unlinked",
+        "fix": "Often a parent signing the device out on purpose. If nobody did, link the device again and check the storage notice on the dashboard.",
+        "affectedKids": []
+      },
+      {
+        "code": "kid.session.heartbeat_failed",
+        "area": "session",
+        "severity": "warning",
+        "count": 1,
+        "firstAt": 1791980087437,
+        "lastAt": 1791980087437,
+        "layman": "The kid device could not check in with the server (Failed to fetch). The child stays signed in and the app keeps trying.",
+        "technical": "POST /api/kid-session/heartbeat failed: error=Failed to fetch attempt=2 online=false role=kid",
+        "fix": "Usually a dropped connection or a cold server start. The app retries automatically; fix only if it repeats in the log.",
+        "affectedKids": []
+      },
+      {
+        "code": "pairing.expired_unapproved",
+        "area": "pairing",
+        "severity": "warning",
+        "count": 1,
+        "firstAt": 1791980087437,
+        "lastAt": 1791980087437,
+        "layman": "A link code ran out before a parent approved it (ZD41KP). The child's screen shows a fresh code.",
+        "technical": "pairing expired: code=ZD41KP createdAt=- expiresAt=- approved=false rotated=false",
+        "fix": "Approve the next code within the time on screen, or raise the pairing window by keeping the link screen open — it now refreshes itself.",
+        "affectedKids": []
+      },
+      {
+        "code": "kid.session.restored",
+        "area": "session",
+        "severity": "warning",
+        "count": 1,
+        "firstAt": 1791980206529,
+        "lastAt": 1791980206529,
+        "layman": "This child's device's device was recognised again from its signed cookie, so the child stayed signed in.",
+        "technical": "device restored from signed backup cookie: deviceId=3d265606-4b84-4be9-9b50-0316df2e7dc1 kidId=12424a8d-773e-4c6c-a885-e7dfd5099b62 storage=unknown durable=false reason=storage had lost the device record",
+        "fix": "The device link was recovered, but the server storage had lost it. Attach a permanent database (DATABASE_URL) to stop this repeating.",
+        "affectedKids": [
+          "Hana"
+        ]
+      },
+      {
+        "code": "chat.voice_missing",
+        "area": "voice",
+        "severity": "warning",
+        "count": 1,
+        "firstAt": 1791980311037,
+        "lastAt": 1791980311037,
+        "layman": "This device cannot read messages out loud, so voice over is switched off here.",
+        "technical": "speechSynthesis unavailable: userAgent=unknown browser platform=unknown device",
+        "fix": "Voice over needs a browser with speech support (Chrome, Edge, Safari). Typing still works on this device.",
+        "affectedKids": []
+      },
+      {
+        "code": "kid.session.linked",
+        "area": "session",
+        "severity": "info",
+        "count": 4,
+        "firstAt": 1791980049298,
+        "lastAt": 1791980377222,
+        "layman": "Zoya signed in on This device.",
+        "technical": "device linked: kidId=68938aab-f980-4432-b397-e296d4ec96cc deviceId=6aa2f391-80da-4c35-8741-6d4f1d6e4c81 label=This device storage=file durable=true",
+        "fix": "Nothing to do. This is the normal start of a kid session.",
+        "affectedKids": [
+          "Zoya",
+          "Hana"
+        ]
+      },
+      {
+        "code": "pairing.renewed",
+        "area": "pairing",
+        "severity": "info",
+        "count": 3,
+        "firstAt": 1791980083459,
+        "lastAt": 1791980377053,
+        "layman": "The link code on the child's screen was about to run out, so a fresh one appeared automatically.",
+        "technical": "pairing rotated before expiry: oldCode=YG4TJF newCode=73D6ZK reason=the previous code had expired",
+        "fix": "Nothing to do. Automatic renewal is what stops the “QR code keeps expiring” problem.",
+        "affectedKids": []
+      },
+      {
+        "code": "pairing.started",
+        "area": "pairing",
+        "severity": "info",
+        "count": 2,
+        "firstAt": 1791980049253,
+        "lastAt": 1791980190082,
+        "layman": "A device asked to be linked and is showing code C2C99V for a parent to approve.",
+        "technical": "pairing started: code=C2C99V label=This device ttlSeconds=900 expiresAt=2026-10-14T12:31:30.078Z",
+        "fix": "Nothing to do; this is the normal start of QR linking.",
+        "affectedKids": []
+      }
+    ],
+    "generatedAt": 1791980382440
+  }
+}
