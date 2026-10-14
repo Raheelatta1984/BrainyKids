@@ -1,196 +1,359 @@
 "use client";
 
-import { useState } from "react";
-import { updateState, useAppState, type Gender, type Theme } from "@/lib/store";
+import { useCallback, useState } from "react";
+import { actions, type Live } from "@/lib/client/api";
+import { useToasts, type ToastItem } from "@/lib/client/useToasts";
 import { THEMES } from "@/components/KidApp";
+import type { Gender, KidView, LiveEvent, PairingView, ParentAccount, Theme } from "@/lib/types";
 
-export default function ParentDashboard() {
-  const state = useAppState();
-  const [unlocked, setUnlocked] = useState(false);
+const CHEERS = ["Great work! 🎉", "Keep going! 💪", "So proud of you! ❤️"];
 
-  if (!state.parentPin) {
-    return <PinSetup />;
-  }
-  if (!unlocked) {
-    return <PinLogin onOk={() => setUnlocked(true)} pin={state.parentPin} />;
-  }
+export default function ParentDashboard({
+  parent,
+  kids,
+  pairings,
+  live,
+}: {
+  parent: ParentAccount;
+  kids: KidView[];
+  pairings: PairingView[];
+  live: Live;
+}) {
+  // Alerts about what children are doing, delivered live from the server.
+  const toasts = useToasts(live.events, useCallback((event) => toastForParent(event), []), 8000);
+
+  const waiting = kids.reduce((sum, kid) => sum + (kid.requestedMinutes > 0 ? 1 : 0), 0);
+  const onlineDevices = kids.reduce((sum, kid) => sum + kid.devices.filter((d) => d.online).length, 0);
+
   return (
     <main className="parent-shell">
       <header className="parent-header">
-        <h1>Parent dashboard</h1>
-        <button className="link" onClick={() => setUnlocked(false)}>
-          Lock
-        </button>
+        <div>
+          <h1>Parent dashboard</h1>
+          <p className="muted">
+            Signed in as {parent.name} · {parent.email}
+          </p>
+        </div>
+        <div className="row gap">
+          <span className={`live-chip ${live.connected ? "on" : "off"}`}>
+            <span className="pulse" /> {live.connected ? "Live" : "Reconnecting"}
+          </span>
+          <button
+            className="link"
+            onClick={async () => {
+              await actions.parentLogout();
+              await live.refresh();
+            }}
+          >
+            Sign out
+          </button>
+        </div>
       </header>
-      <AddKid />
-      {state.kids.length === 0 && <p className="muted">No child profiles yet. Add one above.</p>}
-      {state.kids.map((kid) => {
-        const accuracy = kid.attempted === 0 ? 0 : Math.round((kid.correct / kid.attempted) * 100);
-        return (
-          <section key={kid.id} className="card kid-card">
-            <h2>
-              {THEMES[kid.theme].emoji} {kid.name}
-            </h2>
-            <p className="muted">
-              Age {kid.age} · {kid.gender.replace(/-/g, " ")} · {THEMES[kid.theme].label}
-            </p>
-            <dl className="stats">
-              <div>
-                <dt>Level</dt>
-                <dd>{kid.level}</dd>
-              </div>
-              <div>
-                <dt>Unlocked</dt>
-                <dd>Level {kid.unlockedLevel}</dd>
-              </div>
-              <div>
-                <dt>Answered</dt>
-                <dd>{kid.attempted}</dd>
-              </div>
-              <div>
-                <dt>Accuracy</dt>
-                <dd>{accuracy}%</dd>
-              </div>
-              <div>
-                <dt>Points</dt>
-                <dd>{kid.points}</dd>
-              </div>
-              <div>
-                <dt>Approved minutes</dt>
-                <dd>{kid.approvedMinutes}</dd>
-              </div>
-            </dl>
-            <div className="approve">
-              <span>
-                Requested screen time: <strong>{kid.requestedMinutes} min</strong>
-              </span>
-              <button
-                className="primary"
-                disabled={kid.requestedMinutes === 0}
-                onClick={() =>
-                  updateState((s) => ({
-                    ...s,
-                    kids: s.kids.map((k) =>
-                      k.id === kid.id
-                        ? { ...k, approvedMinutes: k.approvedMinutes + k.requestedMinutes, requestedMinutes: 0 }
-                        : k,
-                    ),
-                  }))
-                }
-              >
-                Approve {kid.requestedMinutes} min
-              </button>
-            </div>
-          </section>
-        );
-      })}
-    </main>
-  );
-}
 
-function PinSetup() {
-  const [pin, setPin] = useState("");
-  const [error, setError] = useState("");
-  return (
-    <main className="parent-shell">
-      <section className="card">
-        <h1>Create a parent PIN</h1>
-        <p className="muted">Use at least 4 digits. This keeps the parent area away from children.</p>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!/^\d{4,}$/.test(pin)) {
-              setError("Use at least 4 digits.");
-              return;
-            }
-            updateState((s) => ({ ...s, parentPin: pin }));
-          }}
-        >
-          <input inputMode="numeric" type="password" value={pin} onChange={(e) => setPin(e.target.value)} aria-label="New parent PIN" />
-          <button type="submit" className="primary">
-            Save PIN
-          </button>
-          {error && <p className="error">{error}</p>}
-        </form>
+      <section className="stat-row">
+        <div className="stat">
+          <span className="stat-value">{kids.length}</span>
+          <span className="stat-label">Children</span>
+        </div>
+        <div className="stat">
+          <span className="stat-value">{onlineDevices}</span>
+          <span className="stat-label">Devices online now</span>
+        </div>
+        <div className="stat">
+          <span className="stat-value">{waiting}</span>
+          <span className="stat-label">Waiting for approval</span>
+        </div>
       </section>
+
+      <LinkDeviceCard kids={kids} pairings={pairings} live={live} />
+      <AddChildCard onDone={() => void live.refresh()} />
+
+      {kids.length === 0 && (
+        <section className="card">
+          <p className="muted">No child profiles yet. Add a child above, then link their device with a QR code.</p>
+        </section>
+      )}
+
+      {kids.map((kid) => (
+        <KidCard key={kid.id} kid={kid} live={live} parentEmail={parent.email} />
+      ))}
+
+      <div className="toasts" aria-live="polite">
+        {toasts.map((toast) => (
+          <div key={toast.id} className="toast">
+            <span className="toast-emoji">{toast.emoji}</span>
+            <span>
+              <strong>{toast.title}</strong>
+              {toast.body && <small>{toast.body}</small>}
+            </span>
+          </div>
+        ))}
+      </div>
     </main>
   );
 }
 
-function PinLogin({ pin, onOk }: { pin: string; onOk: () => void }) {
-  const [entry, setEntry] = useState("");
+/** Which realtime events deserve an alert on the parent's screen. */
+function toastForParent(event: LiveEvent): ToastItem | null {
+  const payload = event.payload as {
+    kidName?: string;
+    minutes?: number;
+    label?: string;
+    message?: string;
+    code?: string;
+  };
+  switch (event.type) {
+    case "screen_time.requested":
+      return {
+        id: event.id,
+        emoji: "⏱️",
+        title: `${payload.kidName} asked for ${payload.minutes} min`,
+        body: "Approve it in the child's card below",
+      };
+    case "device.linked":
+      return { id: event.id, emoji: "📱", title: `${payload.kidName} is signed in`, body: payload.label };
+    case "cheer.sent":
+      return { id: event.id, emoji: "💬", title: `Cheer sent to ${payload.kidName}`, body: payload.message };
+    case "kid.created":
+      return { id: event.id, emoji: "🎈", title: `${payload.kidName} added`, body: "Now link their device" };
+    case "pairing.started":
+      return {
+        id: event.id,
+        emoji: "🔗",
+        title: `A ${payload.label ?? "kid device"} wants to be linked`,
+        body: `Code ${payload.code}`,
+      };
+    default:
+      return null;
+  }
+}
+
+/** Scan/watch for a kid device asking to be linked, and approve it. */
+function LinkDeviceCard({
+  kids,
+  pairings,
+  live,
+}: {
+  kids: KidView[];
+  pairings: PairingView[];
+  live: Live;
+}) {
+  const [code, setCode] = useState("");
+  const [lookup, setLookup] = useState<{ status: string; label?: string; code?: string } | null>(null);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState("");
+  const [target, setTarget] = useState<Record<string, string>>({});
+
+  async function check(event: React.FormEvent) {
+    event.preventDefault();
+    setChecking(true);
+    setError("");
+    setLookup(null);
+    const result = await actions.pairingLookup(code);
+    setChecking(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    if (!result.data.found) {
+      setError("That code was not found. Ask your child's device for a new code.");
+      return;
+    }
+    setLookup({ status: result.data.status, label: result.data.label, code: result.data.code });
+    if (result.data.status !== "pending") {
+      setError(
+        result.data.status === "approved"
+          ? "That code has already been used."
+          : "That code has expired. Ask for a new one on the child's device.",
+      );
+    }
+  }
+
+  async function approve(pairingCode: string, kidId: string) {
+    if (!kidId) {
+      setError("Choose which child this device belongs to.");
+      return;
+    }
+    const result = await actions.pairingApprove(pairingCode, kidId);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setError("");
+    setLookup(null);
+    setCode("");
+    await live.refresh();
+  }
+
+  const ready = kids.length > 0;
+
   return (
-    <main className="parent-shell">
-      <section className="card">
-        <h1>Parent sign-in</h1>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (entry === pin) onOk();
-            else setError("Incorrect PIN.");
-          }}
-        >
-          <input inputMode="numeric" type="password" value={entry} onChange={(e) => setEntry(e.target.value)} aria-label="Parent PIN" />
-          <button type="submit" className="primary">
-            Enter
-          </button>
-          {error && <p className="error">{error}</p>}
-        </form>
-      </section>
-    </main>
+    <section className="card">
+      <h2>Link a kid device</h2>
+      <p className="muted">
+        On the child&apos;s device open BrainyKids → <strong>Kid sign in</strong>. Scan the QR code with this phone&apos;s
+        camera, or type the 6-character code below. The device signs in the moment you approve it.
+      </p>
+
+      {!ready && <p className="banner info">Add a child profile first, then you can link their device.</p>}
+
+      {pairings.filter((p) => p.status === "pending").length > 0 && (
+        <div className="pending-list">
+          {pairings
+            .filter((p) => p.status === "pending")
+            .map((pairing) => (
+              <PairingRow
+                key={pairing.code}
+                code={pairing.code}
+                label="Waiting to be linked"
+                note={`expires ${new Date(pairing.expiresAt).toLocaleTimeString()}`}
+                kids={kids}
+                selected={target[pairing.code] ?? kids[0]?.id ?? ""}
+                onSelect={(value) => setTarget((prev) => ({ ...prev, [pairing.code]: value }))}
+                onApprove={() => void approve(pairing.code, target[pairing.code] ?? kids[0]?.id ?? "")}
+                ready={ready}
+              />
+            ))}
+        </div>
+      )}
+
+      <form className="code-form" onSubmit={check}>
+        <label>
+          Code from the child&apos;s device
+          <input
+            value={code}
+            onChange={(event) => setCode(event.target.value.toUpperCase())}
+            placeholder="ABC123"
+            maxLength={6}
+            autoCapitalize="characters"
+          />
+        </label>
+        <button type="submit" disabled={checking || code.trim().length < 4}>
+          {checking ? "Checking…" : "Check code"}
+        </button>
+      </form>
+
+      {error && <p className="banner error">{error}</p>}
+
+      {lookup && lookup.status === "pending" && lookup.code && (
+        <PairingRow
+          code={lookup.code}
+          label={lookup.label ?? "Device"}
+          note="wants to sign in"
+          kids={kids}
+          selected={target[lookup.code] ?? kids[0]?.id ?? ""}
+          onSelect={(value) => setTarget((prev) => ({ ...prev, [lookup.code as string]: value }))}
+          onApprove={() => void approve(lookup.code as string, target[lookup.code as string] ?? kids[0]?.id ?? "")}
+          ready={ready}
+        />
+      )}
+    </section>
   );
 }
 
-function AddKid() {
+/** One device waiting to be linked: pick a child, then approve. */
+function PairingRow({
+  code,
+  label,
+  note,
+  kids,
+  selected,
+  onSelect,
+  onApprove,
+  ready,
+}: {
+  code: string;
+  label: string;
+  note: string;
+  kids: KidView[];
+  selected: string;
+  onSelect: (value: string) => void;
+  onApprove: () => void;
+  ready: boolean;
+}) {
+  return (
+    <div className="pending">
+      <span className="pending-emoji">📲</span>
+      <span className="pending-text">
+        <strong>{code}</strong>
+        <small>
+          {label} · {note}
+        </small>
+      </span>
+      <select value={selected} onChange={(event) => onSelect(event.target.value)} aria-label="Child for this device">
+        {kids.map((kid) => (
+          <option key={kid.id} value={kid.id}>
+            {kid.name}
+          </option>
+        ))}
+      </select>
+      <button className="primary" disabled={!ready} onClick={onApprove}>
+        Link this device
+      </button>
+    </div>
+  );
+}
+
+function AddChildCard({ onDone }: { onDone: () => void }) {
   const [name, setName] = useState("");
-  const [age, setAge] = useState(5);
+  const [age, setAge] = useState(6);
   const [gender, setGender] = useState<Gender>("prefer-not-to-say");
   const [theme, setTheme] = useState<Theme>("space");
+  const [username, setUsername] = useState("");
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState("");
+
+  function suggestUsername(value: string) {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "")
+      .slice(0, 20);
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    setDone("");
+    const result = await actions.createKid({ name, age, gender, theme, username, pin });
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setDone(`${result.data.kid.name} added. Now link their device with the QR code above.`);
+    setName("");
+    setUsername("");
+    setPin("");
+    onDone();
+  }
+
   return (
     <section className="card">
       <h2>Add a child</h2>
-      <form
-        className="add-kid"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const trimmed = name.trim();
-          if (!trimmed) return;
-          updateState((s) => ({
-            ...s,
-            kids: [
-              ...s.kids,
-              {
-                id: crypto.randomUUID(),
-                name: trimmed,
-                gender,
-                age,
-                theme,
-                level: 1,
-                unlockedLevel: 1,
-                usedByLevel: {},
-                points: 0,
-                attempted: 0,
-                correct: 0,
-                requestedMinutes: 0,
-                approvedMinutes: 0,
-              },
-            ],
-          }));
-          setName("");
-        }}
-      >
+      <p className="muted">Each child signs in to their own device with this username and PIN — no email needed.</p>
+      <form className="add-kid" onSubmit={submit}>
         <label>
           Name
-          <input value={name} onChange={(e) => setName(e.target.value)} />
+          <input
+            value={name}
+            onChange={(event) => {
+              setName(event.target.value);
+              if (!username) setUsername(suggestUsername(event.target.value));
+            }}
+            placeholder="Aria"
+          />
         </label>
         <label>
           Age
-          <input type="number" min={3} max={18} value={age} onChange={(e) => setAge(Number(e.target.value))} />
+          <input type="number" min={3} max={18} value={age} onChange={(event) => setAge(Number(event.target.value))} />
         </label>
         <label>
           Gender
-          <select value={gender} onChange={(e) => setGender(e.target.value as Gender)}>
+          <select value={gender} onChange={(event) => setGender(event.target.value as Gender)}>
             <option value="boy">Boy</option>
             <option value="girl">Girl</option>
             <option value="prefer-not-to-say">Prefer not to say</option>
@@ -198,18 +361,352 @@ function AddKid() {
         </label>
         <label>
           Theme
-          <select value={theme} onChange={(e) => setTheme(e.target.value as Theme)}>
-            {(Object.keys(THEMES) as Theme[]).map((t) => (
-              <option key={t} value={t}>
-                {THEMES[t].label}
+          <select value={theme} onChange={(event) => setTheme(event.target.value as Theme)}>
+            {(Object.keys(THEMES) as Theme[]).map((value) => (
+              <option key={value} value={value}>
+                {THEMES[value].label}
               </option>
             ))}
           </select>
         </label>
-        <button type="submit" className="primary">
-          Add child
+        <label>
+          Kid username
+          <input
+            value={username}
+            onChange={(event) => setUsername(suggestUsername(event.target.value))}
+            placeholder="aria.q"
+            autoCapitalize="none"
+          />
+        </label>
+        <label>
+          Kid PIN
+          <input
+            value={pin}
+            onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 6))}
+            inputMode="numeric"
+            placeholder="4–6 digits"
+          />
+        </label>
+        <button type="submit" className="primary" disabled={busy}>
+          {busy ? "Adding…" : "Add child"}
         </button>
       </form>
+      {error && <p className="banner error">{error}</p>}
+      {done && <p className="banner good">{done}</p>}
     </section>
   );
+}
+
+function KidCard({ kid, live, parentEmail }: { kid: KidView; live: Live; parentEmail: string }) {
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [cheer, setCheer] = useState("");
+  const [bonus, setBonus] = useState(15);
+  const theme = THEMES[kid.theme];
+  const accuracy = kid.attempted === 0 ? 0 : Math.round((kid.correct / kid.attempted) * 100);
+
+  async function run<T>(fn: () => Promise<{ ok: true; data: T } | { ok: false; error: string }>) {
+    setBusy(true);
+    setError("");
+    const result = await fn();
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.error);
+      return false;
+    }
+    await live.refresh();
+    return true;
+  }
+
+  return (
+    <section className={`card kid-card ${kid.online ? "is-online" : ""}`}>
+      <header className="kid-card-head">
+        <span className="avatar">{theme.emoji}</span>
+        <div>
+          <h2>
+            {kid.name} {kid.online && <span className="online-dot" title="Online now" />}
+          </h2>
+          <p className="muted">
+            @{kid.username} · age {kid.age} · {theme.label}
+          </p>
+        </div>
+        <button className="link" onClick={() => setEditing((value) => !value)}>
+          {editing ? "Close" : "Edit"}
+        </button>
+      </header>
+
+      <dl className="stats">
+        <div>
+          <dt>Level</dt>
+          <dd>{kid.level}</dd>
+        </div>
+        <div>
+          <dt>Unlocked</dt>
+          <dd>Level {kid.unlockedLevel}</dd>
+        </div>
+        <div>
+          <dt>Answered</dt>
+          <dd>{kid.attempted}</dd>
+        </div>
+        <div>
+          <dt>Accuracy</dt>
+          <dd>{accuracy}%</dd>
+        </div>
+        <div>
+          <dt>Points</dt>
+          <dd>⭐ {kid.points}</dd>
+        </div>
+        <div>
+          <dt>Approved minutes</dt>
+          <dd>{kid.approvedMinutes}</dd>
+        </div>
+      </dl>
+
+      <div className="approve">
+        <span>
+          Screen time requested: <strong>{kid.requestedMinutes} min</strong>
+        </span>
+        <div className="row gap">
+          <button
+            className="primary"
+            disabled={kid.requestedMinutes === 0 || busy}
+            onClick={() => void run(() => actions.screenTime(kid.id, "approve"))}
+          >
+            Approve {kid.requestedMinutes} min
+          </button>
+          <button
+            className="ghost"
+            disabled={kid.requestedMinutes === 0 || busy}
+            onClick={() => void run(() => actions.screenTime(kid.id, "decline"))}
+          >
+            Send back
+          </button>
+        </div>
+        <div className="row gap">
+          <label className="inline">
+            Bonus
+            <input
+              type="number"
+              min={0}
+              max={120}
+              value={bonus}
+              onChange={(event) => setBonus(Number(event.target.value))}
+              style={{ width: "5rem" }}
+            />
+            min
+          </label>
+          <button className="ghost" disabled={busy} onClick={() => void run(() => actions.screenTime(kid.id, "grant", bonus))}>
+            Give bonus minutes
+          </button>
+        </div>
+      </div>
+
+      <div className="cheer">
+        <span className="muted">Send a cheer (pops up on their screen)</span>
+        <div className="row wrap gap">
+          {CHEERS.map((message) => (
+            <button
+              key={message}
+              className="chip"
+              disabled={busy}
+              onClick={() => void run(() => actions.cheer(kid.id, message))}
+            >
+              {message}
+            </button>
+          ))}
+        </div>
+        <form
+          className="row gap"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            const message = cheer.trim();
+            if (!message) return;
+            const ok = await run(() => actions.cheer(kid.id, message));
+            if (ok) setCheer("");
+          }}
+        >
+          <input value={cheer} onChange={(event) => setCheer(event.target.value)} placeholder="Write your own message" />
+          <button type="submit" disabled={busy}>
+            Send
+          </button>
+        </form>
+      </div>
+
+      <div className="devices">
+        <h3>Devices</h3>
+        {kid.devices.length === 0 && <p className="muted">No device linked yet. Use “Link a kid device” above.</p>}
+        {kid.devices.map((device) => (
+          <div key={device.id} className="device">
+            <span className={`online-dot ${device.online ? "" : "off"}`} />
+            <span>
+              <strong>{device.label}</strong>
+              <small className="muted">
+                {device.online ? "online now" : `last seen ${timeAgo(device.lastSeenAt)}`}
+              </small>
+            </span>
+            <button
+              className="ghost"
+              disabled={busy}
+              onClick={() => void run(() => actions.unlinkDevice(device.id))}
+            >
+              Sign out this device
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <div className="activity">
+        <h3>Recent activity</h3>
+        {kid.activity.length === 0 && <p className="muted">Nothing yet. Answers and screen time show up here live.</p>}
+        <ul>
+          {kid.activity.slice(0, 8).map((entry) => (
+            <li key={entry.id} className={entry.kind}>
+              <span className="activity-icon">
+                {entry.kind === "answer" ? (entry.correct ? "✅" : "➖") : entry.kind === "cheer" ? "💬" : entry.kind === "device" ? "📱" : entry.kind === "level" ? "🏅" : "⏱️"}
+              </span>
+              <span>{entry.text}</span>
+              <small className="muted">{timeAgo(entry.at)}</small>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {error && <p className="banner error">{error}</p>}
+
+      {editing && <EditKid kid={kid} parentEmail={parentEmail} onDone={() => void live.refresh()} />}
+      {!editing && kid.lastSeenAt && (
+        <p className="muted small">
+          {kid.online ? `${kid.name} is using BrainyKids now` : `Last seen ${timeAgo(kid.lastSeenAt)}`}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function EditKid({ kid, parentEmail, onDone }: { kid: KidView; parentEmail: string; onDone: () => void }) {
+  const [name, setName] = useState(kid.name);
+  const [age, setAge] = useState(kid.age);
+  const [gender, setGender] = useState<Gender>(kid.gender);
+  const [theme, setTheme] = useState<Theme>(kid.theme);
+  const [username, setUsername] = useState(kid.username);
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    const payload: Record<string, unknown> = { name, age, gender, theme, username };
+    if (pin) payload.pin = pin;
+    const result = await actions.updateKid(kid.id, payload);
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setPin("");
+    onDone();
+  }
+
+  return (
+    <div className="edit-panel">
+      <h3>Edit {kid.name}</h3>
+      <form className="add-kid" onSubmit={save}>
+        <label>
+          Name
+          <input value={name} onChange={(event) => setName(event.target.value)} />
+        </label>
+        <label>
+          Age
+          <input type="number" min={3} max={18} value={age} onChange={(event) => setAge(Number(event.target.value))} />
+        </label>
+        <label>
+          Gender
+          <select value={gender} onChange={(event) => setGender(event.target.value as Gender)}>
+            <option value="boy">Boy</option>
+            <option value="girl">Girl</option>
+            <option value="prefer-not-to-say">Prefer not to say</option>
+          </select>
+        </label>
+        <label>
+          Theme
+          <select value={theme} onChange={(event) => setTheme(event.target.value as Theme)}>
+            {(Object.keys(THEMES) as Theme[]).map((value) => (
+              <option key={value} value={value}>
+                {THEMES[value].label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Kid username
+          <input value={username} onChange={(event) => setUsername(event.target.value)} autoCapitalize="none" />
+        </label>
+        <label>
+          New kid PIN (optional)
+          <input
+            value={pin}
+            onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 6))}
+            inputMode="numeric"
+            placeholder="Leave blank to keep"
+          />
+        </label>
+        <button type="submit" className="primary" disabled={busy}>
+          {busy ? "Saving…" : "Save changes"}
+        </button>
+      </form>
+      {error && <p className="banner error">{error}</p>}
+
+      <p className="muted small">
+        Forgotten password for {parentEmail}? Signing a child out of kid mode needs the parent account password.
+      </p>
+
+      <div className="danger">
+        {confirmDelete ? (
+          <>
+            <span>Delete {kid.name} and all of their progress?</span>
+            <div className="row gap">
+              <button
+                className="danger-button"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  const result = await actions.deleteKid(kid.id);
+                  setBusy(false);
+                  if (!result.ok) {
+                    setError(result.error);
+                    return;
+                  }
+                  onDone();
+                }}
+              >
+                Yes, delete
+              </button>
+              <button className="link" onClick={() => setConfirmDelete(false)}>
+                Cancel
+              </button>
+            </div>
+          </>
+        ) : (
+          <button className="link" onClick={() => setConfirmDelete(true)}>
+            Delete this child…
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function timeAgo(ts: number): string {
+  const seconds = Math.max(1, Math.round((Date.now() - ts) / 1000));
+  if (seconds < 45) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? "yesterday" : `${days} days ago`;
 }

@@ -1,0 +1,48 @@
+import type { NextRequest } from "next/server";
+import { findPairing, pairingCredentials } from "./session";
+import { store, type KidRecord, type PairingRecord } from "./store";
+
+export type PairingCheck =
+  | { status: "none" | "unknown" | "expired" }
+  | { status: "pending"; pairing: PairingRecord }
+  | { status: "approved"; pairing: PairingRecord; kid: KidRecord; token?: string };
+
+/**
+ * Resolves where a kid device's "link this device" flow stands.
+ * When the parent has approved, the one-time handoff token is claimed here so the
+ * caller can put it in an HTTP-only cookie on the kid's device.
+ */
+export async function checkPairing(req: NextRequest): Promise<PairingCheck> {
+  const credentials = pairingCredentials(req);
+  if (!credentials) return { status: "none" };
+
+  const doc = await store.read();
+  const pairing = findPairing(doc, credentials);
+  if (!pairing) return { status: "unknown" };
+
+  if (pairing.status === "pending") {
+    if (pairing.expiresAt > Date.now()) return { status: "pending", pairing };
+    await store.mutate((fresh) => {
+      const stale = findPairing(fresh, credentials);
+      if (stale && stale.status === "pending" && stale.expiresAt <= Date.now()) stale.status = "expired";
+    });
+    return { status: "expired" };
+  }
+
+  if (pairing.status === "expired") return { status: "expired" };
+
+  return store.mutate((fresh) => {
+    const current = findPairing(fresh, credentials);
+    if (!current || current.status !== "approved") return { status: "expired" as const };
+    const kid = fresh.kids.find((k) => k.id === current.kidId);
+    if (!kid) return { status: "expired" as const };
+    const token = current.handoffToken ?? undefined;
+    current.handoffToken = null;
+    if (current.deviceId) {
+      const device = fresh.devices.find((d) => d.id === current.deviceId);
+      if (device) device.lastSeenAt = Date.now();
+    }
+    kid.lastSeenAt = Date.now();
+    return { status: "approved" as const, pairing: current, kid, token };
+  });
+}

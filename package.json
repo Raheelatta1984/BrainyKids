@@ -13,6 +13,7 @@
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",
     "pg": "8.20.0",
+    "qrcode": "^1.5.4",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
@@ -20,6 +21,7 @@
     "@tailwindcss/postcss": "4.1.17",
     "@types/node": "22.19.15",
     "@types/pg": "8.18.0",
+    "@types/qrcode": "^1.5.5",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "drizzle-kit": "0.31.10",
