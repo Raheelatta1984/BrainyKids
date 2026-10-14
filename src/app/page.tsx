@@ -1,5 +1,5 @@
-import KidApp from "@/components/KidApp";
+import AppShell from "@/components/AppShell";
 
 export default function HomePage() {
-  return <KidApp />;
+  return <AppShell />;
 }

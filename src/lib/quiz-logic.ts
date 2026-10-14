@@ -1,5 +1,13 @@
 import { QUESTIONS, type Question, type Track } from "./quiz-data";
-import type { Kid } from "./store";
+import type { Level } from "./types";
+
+/** The parts of a kid profile the quiz logic needs. Works for API payloads and local state. */
+export type QuizKid = {
+  age: number;
+  level: Level;
+  unlockedLevel: Level;
+  usedByLevel: Record<string, string[]>;
+};
 
 // Ages 4 and under get only the early track. Older kids get a mix of selective and NAPLAN-style questions.
 export function tracksForAge(age: number): Track[] {
@@ -7,7 +15,7 @@ export function tracksForAge(age: number): Track[] {
 }
 
 // Returns a random question for this kid's level that they have not answered yet, or null when the level is finished.
-export function nextQuestion(kid: Kid): Question | null {
+export function nextQuestion(kid: QuizKid): Question | null {
   const tracks = tracksForAge(kid.age);
   const used = new Set(kid.usedByLevel[String(kid.level)] ?? []);
   const pool = QUESTIONS.filter(
@@ -17,7 +25,7 @@ export function nextQuestion(kid: Kid): Question | null {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-export function levelQuestionCount(kid: Kid, level: 1 | 2 | 3): { total: number; done: number } {
+export function levelQuestionCount(kid: QuizKid, level: Level): { total: number; done: number } {
   const tracks = tracksForAge(kid.age);
   const total = QUESTIONS.filter((q) => q.level === level && tracks.includes(q.track)).length;
   const done = (kid.usedByLevel[String(level)] ?? []).length;
