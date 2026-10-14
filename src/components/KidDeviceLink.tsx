@@ -1,9 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { actions } from "@/lib/client/api";
+import { reportBehaviour } from "@/lib/client/diagnostics";
 import { fingerprintBlockedReason, hasPlatformSensor, registerFingerprint, signInWithFingerprint } from "@/lib/client/webauthn";
+import { t } from "@/lib/i18n";
+import { formatStamp } from "@/lib/settings";
 import QrCode from "@/components/QrCode";
+import type { FamilySettings } from "@/lib/types";
 
 type Phase = "starting" | "waiting" | "expired" | "error";
 
@@ -16,18 +20,22 @@ type Phase = "starting" | "waiting" | "expired" | "error";
  * screen becomes that child's app — the device stays in kid mode until a parent
  * signs it out again.
  *
- * A child who has already signed in once can turn on fingerprint unlock, and a
- * parent can sign in with their own fingerprint if they have set one up.
+ * The code now looks after itself: it is renewed a little before it runs out, so
+ * a parent who takes a minute longer is not sent back to “show a new code”, and
+ * every renewal (and every failed wait) is written to the behavioural log.
  */
 export default function KidDeviceLink({
   onLinked,
   onParentInstead,
   parentExists,
+  settings,
 }: {
   onLinked: () => void;
   onParentInstead: () => void;
   parentExists: boolean;
+  settings?: FamilySettings;
 }) {
+  const locale = settings?.locale ?? "en";
   const [phase, setPhase] = useState<Phase>("starting");
   const [code, setCode] = useState("");
   const [expiresAt, setExpiresAt] = useState(0);
@@ -38,12 +46,15 @@ export default function KidDeviceLink({
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [renewNote, setRenewNote] = useState("");
   // After a successful kid sign-in: offer to save the fingerprint on this device.
   const [offerFingerprint, setOfferFingerprint] = useState<string | null>(null);
   const [fingerprint, setFingerprint] = useState({ sensor: false, any: false, why: null as string | null });
   // The QR code has to point at the server this device is talking to, so read the
   // origin on the client only (the code is empty during the first render).
   const [origin] = useState(() => (typeof window === "undefined" ? "" : window.location.origin));
+  const renewals = useRef(0);
+  const currentCode = useRef("");
 
   // Is there a sensor here, and has a fingerprint been set up on this server?
   useEffect(() => {
@@ -61,30 +72,52 @@ export default function KidDeviceLink({
   }, []);
 
   const startPairing = useCallback(
-    async (rotate: boolean) => {
+    async (rotate: boolean, reason: string) => {
       setError("");
-      setPhase("starting");
+      if (!code) setPhase("starting");
+      const previous = currentCode.current;
       const result = await actions.pairingStart(rotate);
       if (!result.ok) {
         setError(result.error);
         setPhase("error");
+        reportBehaviour("pairing.record_missing", { code: previous || "-", reason: result.error });
         return;
       }
       if (result.data.status === "approved") {
         onLinked();
         return;
       }
+      currentCode.current = result.data.code;
       setCode(result.data.code);
       setExpiresAt(result.data.expiresAt);
       setPhase("waiting");
+      if (rotate && previous) {
+        renewals.current += 1;
+        setRenewNote(`New code shown automatically (${previous} → ${result.data.code}). Ask a parent to approve it.`);
+        reportBehaviour("pairing.renewed", {
+          oldCode: previous,
+          code: result.data.code,
+          reason,
+          ttlSeconds: result.data.ttlSeconds,
+        });
+      } else {
+        reportBehaviour("pairing.started", {
+          code: result.data.code,
+          deviceLabel: navigator.userAgent.slice(0, 120),
+          ttlSeconds: result.data.ttlSeconds,
+          expiresAt: new Date(result.data.expiresAt).toISOString(),
+        });
+      }
     },
-    [onLinked],
+    [code, onLinked],
   );
 
   useEffect(() => {
-    const id = setTimeout(() => void startPairing(false), 0);
+    const id = setTimeout(() => void startPairing(false, "first code"), 0);
     return () => clearTimeout(id);
-  }, [startPairing]);
+    // Only on mount: later renewals are driven by the ticking clock below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Ticking clock for the countdown.
   useEffect(() => {
@@ -95,11 +128,24 @@ export default function KidDeviceLink({
   // The QR code points at the parent approval page on this same server.
   const link = code && origin ? `${origin}/pair/${code}` : "";
 
+  const secondsLeft = Math.max(0, Math.floor((expiresAt - now) / 1000));
+  const mmss = `${String(Math.floor(secondsLeft / 60)).padStart(2, "0")}:${String(secondsLeft % 60).padStart(2, "0")}`;
+
+  // Renew a little before the code runs out, so the parent is never left with a
+  // expired QR code on the child's screen.
+  useEffect(() => {
+    if (phase !== "waiting") return;
+    if (secondsLeft > 45) return;
+    if (renewals.current >= 20) return;
+    void startPairing(true, `only ${secondsLeft}s left on ${code}`);
+  }, [phase, secondsLeft, code, startPairing]);
+
   // Wait for a parent: each call long-polls for up to 20 seconds.
   useEffect(() => {
     if (phase !== "waiting") return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let failures = 0;
 
     const poll = async () => {
       const result = await actions.pairingStatus(true);
@@ -109,12 +155,28 @@ export default function KidDeviceLink({
           onLinked();
           return;
         }
-        if (result.data.status === "expired" || result.data.status === "none" || result.data.status === "unknown") {
-          setPhase("expired");
+        if (result.data.status === "pending") {
+          failures = 0;
+          setCode(result.data.code);
+          setExpiresAt(result.data.expiresAt);
+          currentCode.current = result.data.code;
+          timer = setTimeout(() => void poll(), 800);
           return;
         }
+        // expired / none / unknown: get a fresh code instead of giving up.
+        reportBehaviour(result.data.status === "expired" ? "pairing.expired_unapproved" : "pairing.record_missing", {
+          code: currentCode.current || "-",
+          createdAt: "-",
+          expiresAt: new Date(expiresAt).toISOString(),
+          rotated: true,
+          reason: `the server answered “${result.data.status}”`,
+        });
+        await startPairing(true, `the server answered “${result.data.status}”`);
+        return;
       }
-      timer = setTimeout(() => void poll(), 800);
+      failures += 1;
+      reportBehaviour("pairing.record_missing", { code: currentCode.current || "-", reason: result.error });
+      timer = setTimeout(() => void poll(), Math.min(5_000, 800 * failures));
     };
 
     timer = setTimeout(() => void poll(), 1200);
@@ -122,7 +184,7 @@ export default function KidDeviceLink({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [phase, onLinked]);
+  }, [phase, code, expiresAt, onLinked, startPairing]);
 
   async function kidLogin(event: React.FormEvent) {
     event.preventDefault();
@@ -165,9 +227,6 @@ export default function KidDeviceLink({
     }
     onLinked();
   }
-
-  const secondsLeft = Math.max(0, Math.floor((expiresAt - now) / 1000));
-  const mmss = `${String(Math.floor(secondsLeft / 60)).padStart(2, "0")}:${String(secondsLeft % 60).padStart(2, "0")}`;
 
   if (offerFingerprint) {
     return (
@@ -257,7 +316,7 @@ export default function KidDeviceLink({
       {phase === "error" && (
         <>
           <p className="banner error">{error}</p>
-          <button className="primary" onClick={() => void startPairing(true)}>
+          <button className="primary" onClick={() => void startPairing(true, "retry after an error")}>
             Try again
           </button>
         </>
@@ -277,7 +336,9 @@ export default function KidDeviceLink({
               <span className="muted">Or share this code</span>
               <strong>{code.split("").join(" ")}</strong>
               {phase === "waiting" ? (
-                <span className="muted">Expires in {mmss}</span>
+                <span className="muted">
+                  Code is good until {formatStamp(expiresAt, settings, { zone: false })} · {mmss} left
+                </span>
               ) : (
                 <span className="muted">Code expired</span>
               )}
@@ -308,14 +369,16 @@ export default function KidDeviceLink({
 
           {phase === "waiting" ? (
             <p className="waiting">
-              <span className="pulse" /> Waiting for a parent to approve…
+              <span className="pulse" /> Waiting for a parent to approve… the code refreshes itself, so this screen can
+              stay open.
             </p>
           ) : (
-            <button className="primary" onClick={() => void startPairing(true)}>
+            <button className="primary" onClick={() => void startPairing(true, "expired before a parent approved")}>
               Show a new code
             </button>
           )}
 
+          {renewNote && <p className="banner info small">{renewNote}</p>}
           {error && <p className="banner error">{error}</p>}
 
           <button type="button" className="link" onClick={() => setMode("kid-login")}>
@@ -329,6 +392,9 @@ export default function KidDeviceLink({
       <button type="button" className="link" onClick={onParentInstead}>
         Parent? Sign in on this device
       </button>
+      <p className="muted small">
+        Touch-and-talk works here too: {t(locale, "chat.hint")}
+      </p>
     </div>
   );
 }

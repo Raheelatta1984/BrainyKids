@@ -1,11 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { actions, type Live } from "@/lib/client/api";
+import { reportBehaviour } from "@/lib/client/diagnostics";
 import { useToasts, type ToastItem } from "@/lib/client/useToasts";
-import { levelQuestionCount, matchChoice, speak, tracksForAge } from "@/lib/quiz-logic";
+import { canonicalChoiceFor, levelQuestionCount, matchChoice, tracksForAge } from "@/lib/quiz-logic";
+import { localiseQuestion, type LocalisedQuestion } from "@/lib/quiz-i18n";
+import { t } from "@/lib/i18n";
+import { isRtl } from "@/lib/settings";
+import { listenOnce, recognitionSupported, speakText, speechSupported, stopSpeaking } from "@/lib/voice";
 import { QUESTIONS, type Question } from "@/lib/quiz-data";
-import type { KidView, Level, LiveEvent, Theme } from "@/lib/types";
+import ChatPanel from "@/components/ChatPanel";
+import type { FamilySettings, KidView, Level, LiveEvent, Theme } from "@/lib/types";
 
 export const THEMES: Record<Theme, { label: string; emoji: string }> = {
   space: { label: "Space Explorers", emoji: "🚀" },
@@ -14,11 +20,7 @@ export const THEMES: Record<Theme, { label: string; emoji: string }> = {
   dinos: { label: "Dino Dig", emoji: "🦖" },
 };
 
-const LEVEL_NAMES: Record<Level, string> = {
-  1: "Level 1 · Starter",
-  2: "Level 2 · Explorer",
-  3: "Level 3 · Champion",
-};
+const LEVEL_SUBTITLE = ["kid.levelStarter", "kid.levelExplorer", "kid.levelChampion"] as const;
 
 type Feedback = {
   correct: boolean;
@@ -33,37 +35,81 @@ type Feedback = {
  * The locked kid experience. This device belongs to one child profile until a
  * parent signs it out, so there is no profile picker and no way into the parent
  * area without the parent password.
+ *
+ * Everything a child reads and hears follows the family's master settings: the
+ * language of the questions, the spoken voice, and the chat with their parent.
  */
 export default function KidApp({
   kid,
   parent,
+  settings,
   live,
 }: {
   kid: KidView;
   parent: { name: string; email: string };
+  settings: FamilySettings;
   live: Live;
 }) {
   const theme = THEMES[kid.theme];
+  const locale = settings.locale;
   const [level, setLevel] = useState<Level | null>(null);
   const [showSignOut, setShowSignOut] = useState(false);
+  const [showChat, setShowChat] = useState(false);
+  const [voiceOn, setVoiceOn] = useState(settings.kidVoiceOver);
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatError, setChatError] = useState("");
   const spoken = useRef<Set<number>>(new Set());
 
-  // Cheers, screen-time decisions and good news pop up here the moment a parent
-  // sends them, and the device reads them out loud.
-  const toasts = useToasts(live.events, useCallback((event) => toastForKid(event, kid.id), [kid.id]), 9000);
+  // The parent's master setting is the starting point; a child can turn voice over
+  // off on their own device for the rest of the session.
+  useEffect(() => {
+    const id = setTimeout(() => setVoiceOn(settings.kidVoiceOver), 0);
+    return () => clearTimeout(id);
+  }, [settings.kidVoiceOver]);
+
+  // Cheers, screen-time decisions, messages and good news pop up here the moment
+  // a parent sends them, and the device reads them out loud.
+  const toasts = useToasts(live.events, useCallback((event) => toastForKid(event, kid.id, locale), [kid.id, locale]), 9000);
 
   useEffect(() => {
     for (const event of live.events) {
       if (event.kidId !== kid.id || spoken.current.has(event.id)) continue;
       spoken.current.add(event.id);
-      const payload = event.payload as { message?: string; minutes?: number };
-      if (event.type === "cheer.sent" && payload.message) speak(payload.message);
-      else if (event.type === "screen_time.approved") speak(`${payload.minutes ?? 0} minutes of screen time approved.`);
+      const payload = event.payload as { message?: string; minutes?: number; text?: string; from?: string };
+      if (!voiceOn) continue;
+      if (event.type === "cheer.sent" && payload.message) speakText(payload.message, locale);
+      else if (event.type === "screen_time.approved") speakText(`${payload.minutes ?? 0} minutes of screen time approved.`, locale);
+      else if (event.type === "chat.message" && payload.from === "parent" && payload.text && !showChat) {
+        speakText(payload.text, locale);
+      }
     }
-  }, [live.events, kid.id]);
+  }, [live.events, kid.id, locale, voiceOn, showChat]);
+
+  const sendChat = useCallback(
+    async (text: string, kind: "text" | "voice") => {
+      setChatBusy(true);
+      setChatError("");
+      const result = await actions.kidChatSend(text, kind);
+      setChatBusy(false);
+      if (!result.ok) {
+        setChatError(result.error);
+        reportBehaviour("chat.message_failed", { error: result.error, from: "kid", path: "/api/kid-session/chat" });
+        return { ok: false as const, error: result.error };
+      }
+      await live.refresh();
+      return { ok: true as const };
+    },
+    [live],
+  );
+
+  const markChatRead = useCallback(() => {
+    void actions.kidChatRead().then(() => live.refresh());
+  }, [live]);
+
+  const canSpeak = useMemo(() => speechSupported(), []);
 
   return (
-    <main className={`kid-shell theme-${kid.theme}`}>
+    <main className={`kid-shell theme-${kid.theme}`} dir={isRtl(locale) ? "rtl" : "ltr"} lang={locale}>
       <header className="kid-header">
         <span className="kid-id">
           <span className="avatar">{theme.emoji}</span>
@@ -76,15 +122,64 @@ export default function KidApp({
           <span className="pill">⭐ {kid.points} points</span>
           <span className="pill">⏱️ {kid.approvedMinutes} min</span>
         </span>
-        <button className="link lock" onClick={() => setShowSignOut(true)}>
-          🔒 Parent
-        </button>
+        <span className="row gap">
+          <button
+            className="link chat-button"
+            onClick={() => {
+              setShowChat((value) => !value);
+              setLevel(null);
+            }}
+          >
+            💬 {t(locale, "common.family")}
+            {kid.chatUnread > 0 && <span className="badge">{t(locale, "chat.unread", { count: kid.chatUnread })}</span>}
+          </button>
+          {canSpeak && (
+            <button
+              className={`chip small ${voiceOn ? "on" : ""}`}
+              onClick={() => {
+                setVoiceOn((value) => {
+                  if (value) stopSpeaking();
+                  return !value;
+                });
+              }}
+              title={t(locale, "chat.readAloud")}
+            >
+              🔈 {t(locale, "kid.voice")}: {t(locale, voiceOn ? "common.on" : "common.off")}
+            </button>
+          )}
+          <button className="link lock" onClick={() => setShowSignOut(true)}>
+            {t(locale, "kid.parentButton")}
+          </button>
+        </span>
       </header>
 
-      {level === null ? (
-        <LevelPicker kid={kid} onPick={setLevel} live={live} />
+      {showChat ? (
+        <section className="card">
+          {chatError && <p className="banner error small">{chatError}</p>}
+          <ChatPanel
+            viewer="kid"
+            kidName={kid.name}
+            messages={kid.chat}
+            settings={{ ...settings, kidVoiceOver: voiceOn }}
+            unread={kid.chatUnread}
+            busy={chatBusy}
+            onSend={sendChat}
+            onMarkRead={markChatRead}
+            onClose={() => setShowChat(false)}
+          />
+        </section>
+      ) : level === null ? (
+        <LevelPicker kid={kid} onPick={setLevel} live={live} settings={settings} />
       ) : (
-        <Quiz key={`${kid.id}-${level}`} kid={kid} level={level} onBack={() => setLevel(null)} live={live} />
+        <Quiz
+          key={`${kid.id}-${level}-${locale}`}
+          kid={kid}
+          level={level}
+          locale={locale}
+          voiceOn={voiceOn}
+          onBack={() => setLevel(null)}
+          live={live}
+        />
       )}
 
       <div className="toasts" aria-live="polite">
@@ -118,13 +213,17 @@ export default function KidApp({
 }
 
 /** Which realtime events should interrupt the kid's screen. */
-function toastForKid(event: LiveEvent, kidId: string): ToastItem | null {
+function toastForKid(event: LiveEvent, kidId: string, locale: FamilySettings["locale"]): ToastItem | null {
   if (event.kidId !== kidId) return null;
-  const payload = event.payload as { message?: string; minutes?: number };
+  const payload = event.payload as { message?: string; minutes?: number; text?: string; from?: string };
   switch (event.type) {
     case "cheer.sent":
       return payload.message
         ? { id: event.id, emoji: "💌", title: payload.message, body: "From your parent" }
+        : null;
+    case "chat.message":
+      return payload.text && payload.from === "parent"
+        ? { id: event.id, emoji: "💬", title: payload.text, body: t(locale, "chat.withParent") }
         : null;
     case "screen_time.approved":
       return {
@@ -142,7 +241,18 @@ function toastForKid(event: LiveEvent, kidId: string): ToastItem | null {
   }
 }
 
-function LevelPicker({ kid, onPick, live }: { kid: KidView; onPick: (level: Level) => void; live: Live }) {
+function LevelPicker({
+  kid,
+  onPick,
+  live,
+  settings,
+}: {
+  kid: KidView;
+  onPick: (level: Level) => void;
+  live: Live;
+  settings: FamilySettings;
+}) {
+  const locale = settings.locale;
   const [busy, setBusy] = useState(false);
   const [asked, setAsked] = useState(false);
   const [error, setError] = useState("");
@@ -165,17 +275,19 @@ function LevelPicker({ kid, onPick, live }: { kid: KidView; onPick: (level: Leve
       return;
     }
     setAsked(true);
+    reportBehaviour("quiz.screen_time_requested", {
+      kidName: kid.name,
+      minutes: result.data.minutes,
+      kidId: kid.id,
+      pointsSpent: result.data.minutes,
+    });
     await live.refresh();
   }
 
   return (
     <section className="card">
-      <h2>Choose your level</h2>
-      <p className="muted">
-        {kid.age <= 4
-          ? "Fun early questions for little learners."
-          : "A mix of selective-style and NAPLAN-style questions."}
-      </p>
+      <h2>{t(locale, "kid.chooseLevel")}</h2>
+      <p className="muted">{kid.age <= 4 ? t(locale, "kid.earlyNote") : t(locale, "kid.mixedNote")}</p>
       <div className="level-grid">
         {levels.map((level) => {
           const locked = level > kid.unlockedLevel;
@@ -188,8 +300,10 @@ function LevelPicker({ kid, onPick, live }: { kid: KidView; onPick: (level: Leve
               disabled={locked || busy}
               onClick={() => void choose(level)}
             >
-              <strong>{LEVEL_NAMES[level]}</strong>
-              <small>{locked ? "🔒 Finish the previous level to unlock" : `${done} of ${total} done`}</small>
+              <strong>
+                {t(locale, "kid.levelName", { n: level })} · {t(locale, LEVEL_SUBTITLE[level - 1])}
+              </strong>
+              <small>{locked ? t(locale, "kid.levelLocked") : t(locale, "kid.levelProgress", { done, total })}</small>
               <span className="bar">
                 <span style={{ width: `${locked ? 0 : percent}%` }} />
               </span>
@@ -199,104 +313,132 @@ function LevelPicker({ kid, onPick, live }: { kid: KidView; onPick: (level: Leve
       </div>
 
       <div className="request">
-        <p>
-          You have <strong>{kid.points}</strong> points. Each point is 1 minute of screen time.
-        </p>
+        <p>{t(locale, "kid.points", { points: kid.points })}</p>
         <button className="primary" disabled={kid.points === 0 || busy || asked} onClick={() => void askForScreenTime()}>
-          {asked ? "Waiting for a parent…" : `Ask a parent for ${kid.points} min`}
+          {asked ? t(locale, "kid.waitingParent") : t(locale, "kid.askScreenTime", { points: kid.points })}
         </button>
-        {kid.requestedMinutes > 0 && <p className="muted">Waiting for a parent to answer {kid.requestedMinutes} min.</p>}
-        {asked && <p className="muted">Your parent has been told. Watch this screen for their answer ⏱️</p>}
+        {kid.requestedMinutes > 0 && (
+          <p className="muted">{t(locale, "kid.waitingAnswer", { minutes: kid.requestedMinutes })}</p>
+        )}
+        {asked && <p className="muted">{t(locale, "kid.parentTold")}</p>}
         {error && <p className="banner error">{error}</p>}
       </div>
     </section>
   );
 }
 
-function Quiz({ kid, level, onBack, live }: { kid: KidView; level: Level; onBack: () => void; live: Live }) {
+function Quiz({
+  kid,
+  level,
+  locale,
+  voiceOn,
+  onBack,
+  live,
+}: {
+  kid: KidView;
+  level: Level;
+  locale: FamilySettings["locale"];
+  voiceOn: boolean;
+  onBack: () => void;
+  live: Live;
+}) {
   const usedHere = useRef<Set<string>>(new Set());
-  const [question, setQuestion] = useState<Question | null>(() => pickQuestion(kid, level));
+  const [question, setQuestion] = useState<LocalisedQuestion | null>(() => pickQuestion(kid, level, locale));
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [listening, setListening] = useState(false);
-  const [canSpeak, setCanSpeak] = useState(false);
+  const [canListen, setCanListen] = useState(false);
   const [error, setError] = useState("");
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   // Speech recognition is browser-only, so check it just after mount to keep the
   // server-rendered markup and the first client render identical.
   useEffect(() => {
-    const id = setTimeout(() => setCanSpeak("SpeechRecognition" in window || "webkitSpeechRecognition" in window), 0);
+    const id = setTimeout(() => setCanListen(recognitionSupported()), 0);
     return () => clearTimeout(id);
   }, []);
 
-  // Read the question aloud whenever a new one appears.
+  // Read the question aloud whenever a new one appears (voice over).
   useEffect(() => {
-    if (question) speak(`${question.question} ${question.choices.map((c, i) => `${"ABCD"[i]}, ${c}`).join(". ")}`);
-  }, [question]);
+    if (!question || !voiceOn) return;
+    speakText(
+      `${question.question} ${question.choices.map((choice, index) => `${"ABCD"[index]}, ${choice}`).join(". ")}`,
+      locale,
+    );
+  }, [question, locale, voiceOn]);
 
   const { done, total } = levelQuestionCount(kid, level);
   const finished = question === null;
 
-  async function answer(picked: string) {
+  async function answer(canonical: string, shown: string) {
     if (!question || feedback || busy) return;
     setBusy(true);
     setError("");
-    const result = await actions.answer(question.id, picked, level);
+    // The chosen wording is what the child taps; the English wording is what the
+    // server marks, so a translated quiz is still marked fairly.
+    const result = await actions.answer(question.id, canonical, level);
     setBusy(false);
     if (!result.ok) {
       setError(result.error);
+      reportBehaviour("quiz.answer_rejected", {
+        questionId: question.id,
+        level,
+        kidId: kid.id,
+        reason: result.error,
+      });
       return;
     }
     const outcome = result.data.result;
     usedHere.current.add(question.id);
     setFeedback({
       correct: outcome.correct,
-      picked,
-      answer: outcome.answer,
-      explain: outcome.explain,
+      picked: shown,
+      answer: question.choices[question.answerIndex] ?? outcome.answer,
+      explain: question.explain,
       points: outcome.points,
       levelFinished: outcome.levelFinished,
     });
-    speak(
-      outcome.correct
-        ? `Correct! ${outcome.explain}`
-        : `Not quite. The answer is ${outcome.answer}. ${outcome.explain}`,
-    );
+    if (voiceOn) {
+      speakText(
+        outcome.correct
+          ? `${t(locale, "kid.correct")} ${question.explain}`
+          : `${t(locale, "kid.notQuite", { answer: question.choices[question.answerIndex] ?? outcome.answer })} ${question.explain}`,
+        locale,
+      );
+    }
     await live.refresh();
   }
 
   function checkTyped(text: string) {
     if (!question || feedback || busy) return;
-    const choice = matchChoice(text, question.choices);
-    void answer(choice ?? text);
+    const canonical = canonicalChoiceFor(text, question.choices, question.canonicalChoices);
+    if (canonical) {
+      const index = question.canonicalChoices.indexOf(canonical);
+      void answer(canonical, question.choices[index] ?? text);
+      return;
+    }
+    const localMatch = matchChoice(text, question.choices);
+    void answer(localMatch ?? text, localMatch ?? text);
   }
 
   function startListening() {
-    const Ctor =
-      (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionLike }).SpeechRecognition ??
-      (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionLike }).webkitSpeechRecognition;
-    if (!Ctor) return;
-    const recognition = new Ctor();
-    recognition.lang = "en-AU";
-    recognition.interimResults = false;
-    recognition.onresult = (e: { results: { 0: { 0: { transcript: string } } } }) => {
-      const text = e.results[0][0].transcript;
-      setTyped(text);
-      checkTyped(text);
-    };
-    recognition.onend = () => setListening(false);
-    recognition.onerror = () => setListening(false);
-    recognitionRef.current = recognition;
-    setListening(true);
-    recognition.start();
+    setError("");
+    const handle = listenOnce({
+      locale,
+      onText: (text) => {
+        setTyped(text);
+        checkTyped(text);
+      },
+      onError: (message) => setError(message),
+      onEnd: () => setListening(false),
+    });
+    if (handle) setListening(true);
   }
 
   function next() {
     setFeedback(null);
     setTyped("");
-    const nextOne = pickQuestion(kid, level, usedHere.current);
+    const nextOne = pickQuestion(kid, level, locale, usedHere.current);
     if (!nextOne) {
       setQuestion(null);
       return;
@@ -308,19 +450,19 @@ function Quiz({ kid, level, onBack, live }: { kid: KidView; level: Level; onBack
     <section className="card quiz">
       <div className="quiz-top">
         <button className="link" onClick={onBack}>
-          ← Levels
+          {t(locale, "kid.levelsBack")}
         </button>
         <span>
-          {LEVEL_NAMES[level]} · {done}/{total}
+          {t(locale, "kid.levelName", { n: level })} · {done}/{total}
         </span>
       </div>
 
       {finished ? (
         <div className="center">
-          <h2>🎉 Level finished!</h2>
-          <p>You have answered every question in this level. The next level is unlocked.</p>
+          <h2>{t(locale, "kid.levelFinished")}</h2>
+          <p>{t(locale, "kid.levelFinishedBody")}</p>
           <button className="primary" onClick={onBack}>
-            Back to levels
+            {t(locale, "kid.backToLevels")}
           </button>
         </div>
       ) : (
@@ -329,20 +471,20 @@ function Quiz({ kid, level, onBack, live }: { kid: KidView; level: Level; onBack
             {question.visual}
           </div>
           <h2 className="question">{question.question}</h2>
-          <button className="link" onClick={() => speak(question.question)}>
-            🔊 Read question
+          <button className="link" onClick={() => speakText(question.question, locale)}>
+            🔊 {t(locale, "kid.readQuestion")}
           </button>
 
           <div className="choices">
             {question.choices.map((choice, index) => {
-              const isAnswer = feedback && choice === question.answer;
+              const isAnswer = feedback && choice === feedback.answer;
               const isWrongPick = feedback && feedback.picked === choice && !feedback.correct;
               return (
                 <button
-                  key={choice}
+                  key={`${choice}-${index}`}
                   className={`option ${isAnswer ? "correct" : ""} ${isWrongPick ? "wrong" : ""}`}
                   disabled={!!feedback || busy}
-                  onClick={() => void answer(choice)}
+                  onClick={() => void answer(question.canonicalChoices[index] ?? choice, choice)}
                 >
                   <kbd>{"ABCD"[index]}</kbd> {choice}
                 </button>
@@ -361,15 +503,15 @@ function Quiz({ kid, level, onBack, live }: { kid: KidView; level: Level; onBack
               <input
                 value={typed}
                 onChange={(event) => setTyped(event.target.value)}
-                placeholder="Type your answer"
-                aria-label="Type your answer"
+                placeholder={t(locale, "kid.typeAnswer")}
+                aria-label={t(locale, "kid.typeAnswer")}
               />
               <button type="submit" disabled={busy}>
-                {busy ? "Checking…" : "Check"}
+                {busy ? t(locale, "kid.checking") : t(locale, "kid.check")}
               </button>
-              {canSpeak && (
+              {canListen && (
                 <button type="button" onClick={startListening} disabled={listening}>
-                  {listening ? "🎙️ Listening…" : "🎙️ Speak"}
+                  {listening ? t(locale, "kid.listening") : `🎙️ ${t(locale, "kid.speakAnswer")}`}
                 </button>
               )}
             </form>
@@ -379,30 +521,31 @@ function Quiz({ kid, level, onBack, live }: { kid: KidView; level: Level; onBack
 
           {feedback && (
             <div className={`feedback ${feedback.correct ? "good" : "bad"}`} role="status">
-              <h3>{feedback.correct ? "🌟 Correct! +1 point" : `Not quite. The answer is ${feedback.answer}.`}</h3>
+              <h3>{feedback.correct ? t(locale, "kid.correct") : t(locale, "kid.notQuite", { answer: feedback.answer })}</h3>
               <p>{feedback.explain}</p>
               <button
                 className="link"
                 onClick={() =>
-                  speak(
-                    `${feedback.correct ? "Correct! " : `The answer is ${feedback.answer}. `}${feedback.explain}`,
+                  speakText(
+                    `${feedback.correct ? `${t(locale, "kid.correct")} ` : `${t(locale, "kid.notQuite", { answer: feedback.answer })} `}${feedback.explain}`,
+                    locale,
                   )
                 }
               >
-                🔊 Read answer
+                🔊 {t(locale, "kid.readAnswer")}
               </button>
               {feedback.levelFinished ? (
                 <>
                   <p className="banner good">
-                    You finished this level! {kid.unlockedLevel < 3 ? "The next level is unlocked." : "You are a champion!"}
+                    {kid.unlockedLevel < 3 ? t(locale, "kid.levelUnlockNote") : t(locale, "kid.champion")}
                   </p>
                   <button className="primary" onClick={onBack}>
-                    Back to levels
+                    {t(locale, "kid.backToLevels")}
                   </button>
                 </>
               ) : (
                 <button className="primary" onClick={next}>
-                  Next question
+                  {t(locale, "kid.nextQuestion")}
                 </button>
               )}
             </div>
@@ -475,20 +618,16 @@ function SignOutDialog({
   );
 }
 
-/** Picks an unanswered question for this level, avoiding anything done in this session. */
-function pickQuestion(kid: KidView, level: Level, extraUsed?: Set<string>): Question | null {
+/** Picks an unanswered question for this level in the family's language. */
+function pickQuestion(
+  kid: KidView,
+  level: Level,
+  locale: FamilySettings["locale"],
+  extraUsed?: Set<string>,
+): LocalisedQuestion | null {
   const tracks = tracksForAge(kid.age);
   const used = new Set([...(kid.usedByLevel[String(level)] ?? []), ...(extraUsed ?? [])]);
-  const pool = QUESTIONS.filter((q) => q.level === level && tracks.includes(q.track) && !used.has(q.id));
+  const pool: Question[] = QUESTIONS.filter((q) => q.level === level && tracks.includes(q.track) && !used.has(q.id));
   if (pool.length === 0) return null;
-  return pool[Math.floor(Math.random() * pool.length)];
+  return localiseQuestion(pool[Math.floor(Math.random() * pool.length)], locale);
 }
-
-type SpeechRecognitionLike = {
-  lang: string;
-  interimResults: boolean;
-  onresult: ((e: { results: { 0: { 0: { transcript: string } } } }) => void) | null;
-  onend: (() => void) | null;
-  onerror: (() => void) | null;
-  start: () => void;
-};

@@ -75,13 +75,24 @@ export function matchChoice(input: string, choices: string[]): string | null {
   return best && best.score >= 0.8 ? best.choice : null;
 }
 
-// Reads text aloud with the browser's built-in speech voice. Does nothing if the browser has no speech support.
-export function speak(text: string) {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 0.9;
-  utterance.pitch = 1.1;
-  utterance.lang = "en-AU";
-  window.speechSynthesis.speak(utterance);
+// Spoken output lives in src/lib/voice.ts (it needs the family's language and
+// reports problems to the behavioural log), so this module stays plain logic
+// that both the browser and the server can import.
+
+/**
+ * Maps what a child said or typed (in their own language) back to the English
+ * choice the server marks, so a translated quiz is still marked correctly.
+ */
+export function canonicalChoiceFor(input: string, localisedChoices: string[], canonicalChoices: string[]): string | null {
+  const match = matchChoice(input, localisedChoices);
+  if (!match) return null;
+  const index = localisedChoices.indexOf(match);
+  if (index < 0 || index >= canonicalChoices.length) return null;
+  return canonicalChoices[index];
+}
+
+/** True when the input looks like the answer at this index (used for free text). */
+export function choiceIndexFor(input: string, choices: string[]): number {
+  const match = matchChoice(input, choices);
+  return match === null ? -1 : choices.indexOf(match);
 }

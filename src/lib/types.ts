@@ -6,6 +6,32 @@ export type Level = 1 | 2 | 3;
 
 export const LEVELS: Level[] = [1, 2, 3];
 
+/** Languages a family can pick as their master language (app text, questions and voice). */
+export type LocaleCode = "en" | "es" | "fr" | "ar" | "ur" | "hi" | "zh";
+
+export type DateFormat = "auto" | "dmy" | "mdy" | "ymd";
+export type TimeFormat = "auto" | "12" | "24";
+
+/**
+ * The family's master settings. Everything the app shows a date, a time, a
+ * language or a spoken voice follows these values, including the behavioural
+ * log, so every log line is written in the family's own date/time/language.
+ */
+export type FamilySettings = {
+  /** IANA time zone, for example “Australia/Sydney”. Empty means “the device's zone”. */
+  timeZone: string;
+  /** Master language: app text, quiz questions/tasks and the spoken voice. */
+  locale: LocaleCode;
+  dateFormat: DateFormat;
+  timeFormat: TimeFormat;
+  /** Read chat messages and quiz feedback aloud on the kid device. */
+  kidVoiceOver: boolean;
+  /** Read chat messages aloud on the parent's device. */
+  parentVoiceOver: boolean;
+  /** Kids can send a message by speaking instead of typing. */
+  kidDictation: boolean;
+};
+
 export type ParentAccount = {
   id: string;
   name: string;
@@ -21,12 +47,103 @@ export type ActivityEntry = {
   correct?: boolean;
 };
 
+/** One chat message between a parent and one child. */
+export type ChatMessage = {
+  id: string;
+  kidId: string;
+  from: "parent" | "kid";
+  text: string;
+  at: number;
+  /** True when the receiving side has seen it. */
+  seen: boolean;
+  /** A dictated “voice note” (spoken by the sender, shown and read out as text). */
+  kind: "text" | "voice";
+};
+
+/** One line of the behavioural log: layman wording plus the technical detail. */
+export type BehaviourEntry = {
+  id: number;
+  code: string;
+  area: BehaviourArea;
+  severity: BehaviourSeverity;
+  at: number;
+  /** Plain-language line anybody can understand. */
+  layman: string;
+  /** Technical line for a developer: what happened, where, with what values. */
+  technical: string;
+  /** A short, plain-language suggestion of what to do about it. */
+  fix: string;
+  source: "server" | "client";
+  role: "parent" | "kid" | "guest" | "server";
+  parentId?: string | null;
+  kidId?: string | null;
+  kidName?: string | null;
+  deviceId?: string | null;
+  /** Extra machine-readable context (never contains secrets). */
+  context: Record<string, unknown>;
+  /** Date/time/language settings in force when the entry was written. */
+  settings: {
+    timeZone: string;
+    locale: LocaleCode;
+    dateFormat: DateFormat;
+    timeFormat: TimeFormat;
+  };
+  client?: {
+    userAgent?: string;
+    platform?: string;
+    url?: string;
+    protocol?: string;
+    online?: boolean;
+    timeZone?: string;
+    language?: string;
+    cookies?: boolean;
+  };
+};
+
+export type BehaviourArea =
+  | "session"
+  | "storage"
+  | "pairing"
+  | "chat"
+  | "voice"
+  | "quiz"
+  | "settings"
+  | "server"
+  | "device";
+
+export type BehaviourSeverity = "info" | "warning" | "critical";
+
+/** A group of log lines sharing one behaviour code: what a review looks at first. */
+export type BehaviourGroup = {
+  code: string;
+  area: BehaviourArea;
+  severity: BehaviourSeverity;
+  count: number;
+  firstAt: number;
+  lastAt: number;
+  layman: string;
+  technical: string;
+  fix: string;
+  affectedKids: string[];
+};
+
+export type BehaviourSummary = {
+  total: number;
+  critical: number;
+  warning: number;
+  info: number;
+  groups: BehaviourGroup[];
+  generatedAt: number;
+};
+
 export type DeviceView = {
   id: string;
   label: string;
   createdAt: number;
   lastSeenAt: number;
   online: boolean;
+  /** True when the device is held in a signed cookie backup because storage lost it. */
+  restored?: boolean;
 };
 
 export type KidView = {
@@ -50,6 +167,10 @@ export type KidView = {
   online: boolean;
   activity: ActivityEntry[];
   devices: DeviceView[];
+  /** Most recent chat messages between this child and their parent (oldest first). */
+  chat: ChatMessage[];
+  /** Unread chat messages for whoever asked: the parent sees the child's, the child the parent's. */
+  chatUnread: number;
 };
 
 /** A fingerprint / face unlock credential (WebAuthn passkey) set up in the family. */
@@ -112,24 +233,28 @@ export type LiveEventType =
   | "screen_time.declined"
   | "screen_time.granted"
   | "cheer.sent"
+  | "chat.message"
   | "pairing.started"
-  | "pairing.approved";
+  | "pairing.approved"
+  | "behaviour.logged";
 
 /** Everything a signed-in browser needs, in one round trip. */
 export type Snapshot =
-  | { role: "guest"; hasAccounts: boolean; storage?: StorageState }
+  | { role: "guest"; hasAccounts: boolean; storage?: StorageState; unlinked?: boolean }
   | {
       role: "parent";
       parent: ParentAccount;
       kids: KidView[];
       pairings: PairingView[];
       passkeys: PasskeyView[];
+      settings: FamilySettings;
       storage?: StorageState;
     }
   | {
       role: "kid";
       kid: KidView;
       parent: { name: string; email: string };
+      settings: FamilySettings;
       storage?: StorageState;
     };
 

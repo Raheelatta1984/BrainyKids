@@ -1,15 +1,29 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { KidView, LiveEvent, ParentAccount, Snapshot, StorageState } from "@/lib/types";
+import type {
+  BehaviourEntry,
+  BehaviourSummary,
+  FamilySettings,
+  KidView,
+  LiveEvent,
+  ParentAccount,
+  Snapshot,
+  StorageState,
+} from "@/lib/types";
 
-export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: string };
+export type ApiResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: string; /** HTTP status when the server answered (-1 for a network failure). */ status: number };
 
-async function request<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
+export type RequestOptions = { /** Set false for background calls that should not wake a sleeping server. */ keepalive?: boolean };
+
+async function request<T>(path: string, init?: RequestInit, options: RequestOptions = {}): Promise<ApiResult<T>> {
   try {
     const res = await fetch(path, {
       credentials: "same-origin",
       cache: "no-store",
+      keepalive: options.keepalive,
       ...init,
       headers: {
         ...(init?.body ? { "content-type": "application/json" } : {}),
@@ -25,32 +39,61 @@ async function request<T>(path: string, init?: RequestInit): Promise<ApiResult<T
       data = {};
     }
     if (!res.ok) {
-      if (typeof data.error === "string") return { ok: false, error: data.error };
+      if (typeof data.error === "string") return { ok: false, error: data.error, status: res.status };
       return {
         ok: false,
         error:
           res.status >= 500
             ? "BrainyKids could not finish that request. Please try again in a moment."
             : `Something went wrong (${res.status}).`,
+        status: res.status,
       };
     }
     return { ok: true, data: data as T };
   } catch {
-    return { ok: false, error: "Could not reach the server. Check your connection and try again." };
+    return {
+      ok: false,
+      error: "Could not reach the server. Check your connection and try again.",
+      status: -1,
+    };
   }
 }
 
 export const api = {
-  get: <T,>(path: string) => request<T>(path),
-  post: <T,>(path: string, body?: unknown) => request<T>(path, { method: "POST", body: JSON.stringify(body ?? {}) }),
+  get: <T,>(path: string, options?: RequestOptions) => request<T>(path, undefined, options),
+  post: <T,>(path: string, body?: unknown, options?: RequestOptions) =>
+    request<T>(path, { method: "POST", body: JSON.stringify(body ?? {}) }, options),
   patch: <T,>(path: string, body?: unknown) => request<T>(path, { method: "PATCH", body: JSON.stringify(body ?? {}) }),
   del: <T,>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
-export type PairingStart = { status: "pending"; code: string; expiresAt: number } | { status: "approved" };
+export type PairingStart =
+  | { status: "pending"; code: string; expiresAt: number; ttlSeconds: number; renewed: boolean }
+  | { status: "approved" };
 export type PairingStatusResponse =
-  | { status: "none" | "unknown" | "expired" }
-  | { status: "approved"; kidId: string; kid: KidView | null };
+  | { status: "none" | "unknown" | "expired"; secondsLeft?: number }
+  | { status: "pending"; code: string; expiresAt: number; secondsLeft: number }
+  | { status: "approved"; kidId: string; kid: KidView | null; secondsLeft?: null };
+
+/** The answer from /api/kid-session/heartbeat. Only `linked: false` means signed out. */
+export type HeartbeatResponse = {
+  linked: boolean;
+  reason?: "no-cookie" | "unlinked";
+  kidId?: string;
+  kidName?: string;
+  restored?: boolean;
+  durable?: boolean;
+};
+
+export type FamilySettingsResponse = { settings: FamilySettings; message?: string; changed?: string[]; rejected?: number };
+
+export type DiagnosticsResponse = {
+  entries: BehaviourEntry[];
+  summary: BehaviourSummary;
+  settings: FamilySettings;
+  storage: StorageState;
+  kids: { id: string; name: string }[];
+};
 
 export type AnswerResult = {
   correct: boolean;
@@ -116,11 +159,47 @@ export const actions = {
 
   kidLogin: (username: string, pin: string) => api.post<{ kid: KidView | null }>("/api/kid-session/login", { username, pin }),
   kidLogout: (parentPassword: string) => api.post<{ ok: true }>("/api/kid-session/logout", { parentPassword }),
-  heartbeat: () => api.post<{ linked: boolean; kidId?: string }>("/api/kid-session/heartbeat"),
+  /** Says whether this device is still linked. A network error is NOT a sign-out. */
+  heartbeat: () => api.post<HeartbeatResponse>("/api/kid-session/heartbeat"),
   answer: (questionId: string, picked: string, level: number) =>
     api.post<{ result: AnswerResult; kid: KidView | null }>("/api/kid-session/answers", { questionId, picked, level }),
   requestScreenTime: () => api.post<{ minutes: number }>("/api/kid-session/screen-time"),
   setLevel: (level: number) => api.post<{ kid: KidView | null }>("/api/kid-session/level", { level }),
+
+  /** Master settings: date, time, language, voice over. */
+  settings: () => api.get<{ settings: FamilySettings }>("/api/settings"),
+  updateSettings: (patch: Partial<FamilySettings>) => api.patch<FamilySettingsResponse>("/api/settings", patch),
+
+  /** The behavioural log: report from the browser, read back for the dashboard. */
+  reportBehaviour: (events: ClientBehaviourEvent[], keepalive = false) =>
+    api.post<{ ok: true; logged: number }>("/api/diagnostics", { events }, { keepalive }),
+  diagnostics: (limit = 300) => api.get<DiagnosticsResponse>(`/api/diagnostics?limit=${limit}`),
+
+  /** Parent ↔ child chat, with dictation (“voice notes”) and read-aloud. */
+  chatSend: (kidId: string, text: string, kind: "text" | "voice") =>
+    api.post<{ ok: true; kid: KidView | null }>(`/api/kids/${kidId}/chat`, { text, kind }),
+  chatRead: (kidId: string) => api.post<{ ok: true; read: number }>(`/api/kids/${kidId}/chat`, { action: "read" }),
+  kidChatSend: (text: string, kind: "text" | "voice") =>
+    api.post<{ ok: true; kid: KidView | null }>("/api/kid-session/chat", { text, kind }),
+  kidChatRead: () => api.post<{ ok: true; read: number }>("/api/kid-session/chat", { action: "read" }),
+};
+
+/** One line a browser sends to the server-side behavioural log. */
+export type ClientBehaviourEvent = {
+  code: string;
+  vars?: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  at?: number;
+  client?: {
+    userAgent?: string;
+    platform?: string;
+    url?: string;
+    protocol?: string;
+    online?: boolean;
+    timeZone?: string;
+    language?: string;
+    cookies?: boolean;
+  };
 };
 
 export type Live = {

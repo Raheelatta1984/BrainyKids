@@ -20,7 +20,7 @@ import fsSync, { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Gender, Level, StorageState, Theme } from "@/lib/types";
+import type { BehaviourEntry, FamilySettings, Gender, Level, StorageState, Theme } from "@/lib/types";
 
 /** A storage failure with a message that can be shown to the person using the app. */
 export class StorageError extends Error {
@@ -158,6 +158,22 @@ export type EventRecord = {
   ts: number;
 };
 
+/** One chat message between a parent and one child. */
+export type ChatRecord = {
+  id: string;
+  parentId: string;
+  kidId: string;
+  from: "parent" | "kid";
+  text: string;
+  kind: "text" | "voice";
+  at: number;
+  /** Seen by the receiving side. */
+  seen: boolean;
+};
+
+/** One line of the behavioural log (see src/lib/behaviour.ts for the wording). */
+export type BehaviourRecord = BehaviourEntry;
+
 export type DbDoc = {
   version: 1;
   parents: ParentRecord[];
@@ -169,9 +185,26 @@ export type DbDoc = {
   challenges: ChallengeRecord[];
   events: EventRecord[];
   nextEventId: number;
+  /** Parent ↔ child chat threads (newest last). */
+  chats: ChatRecord[];
+  /** Master settings per parent account (time zone, date/time format, language, voice). */
+  settings: Record<string, FamilySettings>;
+  /** The behavioural log: everything the app noticed about itself, newest last. */
+  behaviour: BehaviourRecord[];
+  nextBehaviourId: number;
+  /**
+   * Children a parent has deleted. Kept so a device that still holds its own
+   * signed cookie cannot bring the profile back to life when the server is on
+   * temporary storage (the same reason a signed-out device stays signed out).
+   */
+  deletedKids: { id: string; at: number }[];
 };
 
 export const MAX_EVENTS = 500;
+/** How many behavioural log lines are kept in storage (older ones stay in the exported file). */
+export const MAX_BEHAVIOUR = 1_500;
+/** How many chat messages are kept per family. */
+export const MAX_CHAT = 400;
 const SESSION_DAYS = 30;
 
 export function emptyDoc(): DbDoc {
@@ -186,10 +219,15 @@ export function emptyDoc(): DbDoc {
     challenges: [],
     events: [],
     nextEventId: 0,
+    chats: [],
+    settings: {},
+    behaviour: [],
+    nextBehaviourId: 0,
+    deletedKids: [],
   };
 }
 
-/** Older documents were written before passkeys/challenges existed. */
+/** Older documents were written before passkeys/challenges/chat/settings/behaviour existed. */
 export function normaliseDoc(doc: DbDoc): DbDoc {
   doc.parents ??= [];
   doc.kids ??= [];
@@ -200,6 +238,11 @@ export function normaliseDoc(doc: DbDoc): DbDoc {
   doc.challenges ??= [];
   doc.events ??= [];
   doc.nextEventId ??= 0;
+  doc.chats ??= [];
+  doc.settings ??= {};
+  doc.behaviour ??= [];
+  doc.nextBehaviourId ??= doc.behaviour.reduce((max, entry) => Math.max(max, entry.id ?? 0), 0);
+  doc.deletedKids ??= [];
   return doc;
 }
 
@@ -415,8 +458,18 @@ function fileDriver(): Driver {
     !explicitDir && Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY);
   const configuredDir = explicitDir || path.join(process.cwd(), ".data");
   const fallbackDir = path.join(os.tmpdir(), "brainykids-data");
-  let dir = isServerlessHost ? fallbackDir : configuredDir;
-  let usingFallback = isServerlessHost;
+  // Start in the temporary folder when the configured folder cannot be written
+  // (a read-only mount, a container without the directory). Deciding once, here,
+  // means reads and writes always use the same file.
+  const usingFallbackDir = isServerlessHost || !canWrite(configuredDir);
+  let dir = usingFallbackDir ? fallbackDir : configuredDir;
+  let usingFallback = usingFallbackDir;
+  if (usingFallbackDir && !isServerlessHost) {
+    console.warn(
+      `[brainykids] ${configuredDir} is not writable; keeping data in ${fallbackDir}. ` +
+        "Set DATABASE_URL (or BRAINYKIDS_DATA_DIR) for storage that survives a restart.",
+    );
+  }
 
   async function readFrom(target: string): Promise<DbDoc | null> {
     try {
@@ -477,6 +530,13 @@ function fileDriver(): Driver {
       }
     },
     async save(doc) {
+      // Check the folder before touching it: some hosts (a read-only mount, a
+      // container without the directory) answer a write with a call that never
+      // returns instead of an error. Checking first keeps the request fast.
+      if (!usingFallback && !canWrite(dir)) {
+        await fallback(doc, { code: "EACCES" } as NodeJS.ErrnoException);
+        return;
+      }
       try {
         await writeTo(dir, doc);
       } catch (error) {
@@ -870,6 +930,60 @@ export function pushEvent(
   doc.events.push(record);
   if (doc.events.length > MAX_EVENTS) doc.events.splice(0, doc.events.length - MAX_EVENTS);
   return record;
+}
+
+/**
+ * Adds a behavioural log line and returns it with its sequence number.
+ * The oldest lines are dropped once the log is full (the exported file keeps them).
+ */
+export function appendBehaviour(doc: DbDoc, entry: BehaviourEntry): BehaviourEntry {
+  const record: BehaviourEntry = { ...entry, id: (doc.nextBehaviourId ?? 0) + 1 };
+  doc.nextBehaviourId = record.id;
+  doc.behaviour.push(record);
+  if (doc.behaviour.length > MAX_BEHAVIOUR) doc.behaviour.splice(0, doc.behaviour.length - MAX_BEHAVIOUR);
+  return record;
+}
+
+/** How many deleted children are remembered (the list only ever grows slowly). */
+export const MAX_TOMBSTONES = 200;
+
+/** Remembers that a parent deleted a child, so a stale device cookie cannot undo it. */
+export function tombstoneKid(doc: DbDoc, kidId: string, now = Date.now()) {
+  doc.deletedKids = (doc.deletedKids ?? []).filter((row) => row.id !== kidId);
+  doc.deletedKids.push({ id: kidId, at: now });
+  if (doc.deletedKids.length > MAX_TOMBSTONES) doc.deletedKids.splice(0, doc.deletedKids.length - MAX_TOMBSTONES);
+}
+
+/** True when a parent deleted this child (used before restoring a device link). */
+export function isKidDeleted(doc: DbDoc, kidId: string): boolean {
+  return (doc.deletedKids ?? []).some((row) => row.id === kidId);
+}
+
+/** Adds a chat message, keeping the newest MAX_CHAT messages across the family. */
+export function appendChat(doc: DbDoc, message: ChatRecord): ChatRecord {
+  doc.chats.push(message);
+  if (doc.chats.length > MAX_CHAT) doc.chats.splice(0, doc.chats.length - MAX_CHAT);
+  return message;
+}
+
+/** The master settings for a family, with anything missing filled in by the caller. */
+export function settingsFor(doc: DbDoc, parentId: string | null | undefined): Partial<FamilySettings> & { locale?: FamilySettings["locale"] } {
+  if (!parentId) return {};
+  return doc.settings?.[parentId] ?? {};
+}
+
+/**
+ * The folder the behavioural log file is written to. Mirrors the file driver's
+ * choice (configured folder, or a temporary folder when the project folder
+ * cannot be written, e.g. on Vercel without a database).
+ */
+export function writableDataDir(): string {
+  const explicit = process.env.BRAINYKIDS_DATA_DIR?.trim();
+  const fallback = path.join(os.tmpdir(), "brainykids-data");
+  if (explicit) return canWrite(explicit) ? explicit : fallback;
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY) return fallback;
+  const configured = path.join(process.cwd(), ".data");
+  return canWrite(configured) ? configured : fallback;
 }
 
 export type EventPage = {

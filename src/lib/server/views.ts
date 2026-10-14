@@ -1,12 +1,62 @@
-import { isOnline, type ActivityEntry, type KidView, type PairingView, type ParentAccount } from "@/lib/types";
+import { isOnline, type ActivityEntry, type ChatMessage, type FamilySettings, type KidView, type PairingView, type ParentAccount } from "@/lib/types";
+import { resolveSettings } from "@/lib/settings";
 import { MAX_ACTIVITY } from "./constants";
-import type { DbDoc, KidRecord, PairingRecord, ParentRecord } from "./store";
+import type { ChatRecord, DbDoc, KidRecord, PairingRecord, ParentRecord } from "./store";
+
+/** How many chat messages a screen keeps in memory / shows. */
+export const MAX_CHAT_VIEW = 50;
+export const MAX_CHAT_CHARS = 500;
 
 export function parentView(parent: ParentRecord): ParentAccount {
   return { id: parent.id, name: parent.name, email: parent.email, createdAt: parent.createdAt };
 }
 
-export function kidView(doc: DbDoc, kid: KidRecord, now = Date.now()): KidView {
+/** The family's master settings (time zone, date/time format, language, voice). */
+export function settingsForParent(doc: DbDoc, parentId: string | null | undefined): FamilySettings {
+  if (!parentId) return resolveSettings(null);
+  return resolveSettings(doc.settings?.[parentId] ?? null);
+}
+
+export function chatView(record: ChatRecord): ChatMessage {
+  return {
+    id: record.id,
+    kidId: record.kidId,
+    from: record.from,
+    text: record.text,
+    at: record.at,
+    seen: record.seen,
+    kind: record.kind,
+  };
+}
+
+/** The most recent messages with one child, oldest first. */
+export function chatFor(doc: DbDoc, kidId: string): ChatMessage[] {
+  return (doc.chats ?? [])
+    .filter((message) => message.kidId === kidId)
+    .slice(-MAX_CHAT_VIEW)
+    .map(chatView);
+}
+
+/** Messages the viewer has not seen yet: parents see the child's, the child sees the parent's. */
+export function chatUnreadFor(doc: DbDoc, kidId: string, viewer: "parent" | "kid"): number {
+  const from = viewer === "parent" ? "kid" : "parent";
+  return (doc.chats ?? []).filter((message) => message.kidId === kidId && message.from === from && !message.seen).length;
+}
+
+/** Marks the other side's messages as seen (called when a chat panel is open on screen). */
+export function markChatSeen(doc: DbDoc, kidId: string, viewer: "parent" | "kid"): number {
+  const from = viewer === "parent" ? "kid" : "parent";
+  let changed = 0;
+  for (const message of doc.chats ?? []) {
+    if (message.kidId === kidId && message.from === from && !message.seen) {
+      message.seen = true;
+      changed += 1;
+    }
+  }
+  return changed;
+}
+
+export function kidView(doc: DbDoc, kid: KidRecord, now = Date.now(), viewer: "parent" | "kid" = "parent"): KidView {
   return {
     id: kid.id,
     parentId: kid.parentId,
@@ -36,6 +86,8 @@ export function kidView(doc: DbDoc, kid: KidRecord, now = Date.now()): KidView {
         lastSeenAt: d.lastSeenAt,
         online: isOnline(d.lastSeenAt, now),
       })),
+    chat: chatFor(doc, kid.id),
+    chatUnread: chatUnreadFor(doc, kid.id, viewer),
   };
 }
 

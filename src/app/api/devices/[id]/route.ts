@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { error, json, route } from "@/lib/server/http";
+import { recordBehaviour } from "@/lib/server/diagnostics";
 import { parentAuth } from "@/lib/server/session";
 import { unlinkDevice } from "@/lib/server/service";
 import { store } from "@/lib/server/store";
@@ -19,7 +20,31 @@ export const DELETE = route(async (req: NextRequest, ctx: Ctx) => {
   const removed = await store.mutate((doc) => {
     const device = doc.devices.find((d) => d.id === id && d.parentId === auth.parent.id);
     if (!device) return false;
+    const kid = doc.kids.find((k) => k.id === device.kidId);
     unlinkDevice(doc, device);
+    if (kid) {
+      recordBehaviour(
+        doc,
+        {
+          code: "kid.session.signed_out_by_parent",
+          parentId: auth.parent.id,
+          kidId: kid.id,
+          kidName: kid.name,
+          deviceId: device.id,
+          role: "parent",
+          vars: {
+            kidName: kid.name,
+            deviceLabel: device.label,
+            deviceId: device.id,
+            kidId: kid.id,
+            parentId: auth.parent.id,
+            trigger: "parent dashboard (remote sign-out)",
+          },
+          context: { trigger: "dashboard", label: device.label },
+        },
+        { force: true },
+      );
+    }
     return true;
   });
 

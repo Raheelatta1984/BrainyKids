@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { newToken, normaliseCode, tokenHash } from "@/lib/server/auth";
 import { error, json, readBody, route, str } from "@/lib/server/http";
+import { recordBehaviour } from "@/lib/server/diagnostics";
 import { parentAuth } from "@/lib/server/session";
 import { newId, pushEvent, store, type DeviceRecord } from "@/lib/server/store";
 import { isId, kidView } from "@/lib/server/views";
@@ -24,14 +25,36 @@ export const POST = route(async (req: NextRequest) => {
   const token = newToken();
   const outcome = await store.mutate((doc) => {
     const pairing = doc.pairings.find((p) => p.code === code);
-    if (!pairing) return { ok: false as const, reason: "unknown" as const };
-    if (pairing.status === "approved") return { ok: false as const, reason: "used" as const };
+    if (!pairing) {
+      recordBehaviour(doc, {
+        code: "pairing.rejected",
+        parentId: auth.parent.id,
+        vars: { code, reason: "the code was not found (its record is gone)", status: "missing", expiresAt: "-" },
+        context: { code, reason: "missing" },
+      });
+      return { ok: false as const, reason: "unknown" as const };
+    }
+    if (pairing.status === "approved") {
+      recordBehaviour(doc, {
+        code: "pairing.rejected",
+        parentId: auth.parent.id,
+        vars: { code, reason: "the code had already been used", status: "approved", expiresAt: new Date(pairing.expiresAt).toISOString() },
+        context: { code, reason: "used" },
+      });
+      return { ok: false as const, reason: "used" as const, pairing };
+    }
     if (pairing.status === "expired" || pairing.expiresAt <= Date.now()) {
       pairing.status = "expired";
-      return { ok: false as const, reason: "expired" as const };
+      recordBehaviour(doc, {
+        code: "pairing.rejected",
+        parentId: auth.parent.id,
+        vars: { code, reason: "the code had expired", status: "expired", expiresAt: new Date(pairing.expiresAt).toISOString() },
+        context: { code, reason: "expired" },
+      });
+      return { ok: false as const, reason: "expired" as const, pairing };
     }
     const kid = doc.kids.find((k) => k.id === kidId && k.parentId === auth.parent.id);
-    if (!kid) return { ok: false as const, reason: "kid" as const };
+    if (!kid) return { ok: false as const, reason: "kid" as const, pairing };
 
     const device: DeviceRecord = {
       id: newId(),
@@ -55,7 +78,22 @@ export const POST = route(async (req: NextRequest) => {
       kidId: kid.id,
       payload: { kidName: kid.name, label: device.label, deviceId: device.id },
     });
-    return { ok: true as const, kid, device };
+    pushEvent(doc, { type: "pairing.approved", parentId: auth.parent.id, kidId: kid.id, payload: { code, kidName: kid.name } });
+    recordBehaviour(
+      doc,
+      {
+        code: "pairing.approved",
+        parentId: auth.parent.id,
+        kidId: kid.id,
+        kidName: kid.name,
+        deviceId: device.id,
+        role: "parent",
+        vars: { code, kidId: kid.id, deviceId: device.id, label: device.label, deviceLabel: device.label, parentId: auth.parent.id, kidName: kid.name },
+        context: { code, label: device.label },
+      },
+      { force: true },
+    );
+    return { ok: true as const, kid, device, pairing };
   });
 
   if (!outcome.ok) {

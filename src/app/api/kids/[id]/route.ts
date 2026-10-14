@@ -3,7 +3,8 @@ import { hashSecret, isValidPin, isValidUsername, normaliseUsername } from "@/li
 import { error, json, num, readBody, route, str } from "@/lib/server/http";
 import { parentAuth } from "@/lib/server/session";
 import { findKidByUsername } from "@/lib/server/service";
-import { pushEvent, store } from "@/lib/server/store";
+import { recordBehaviour } from "@/lib/server/diagnostics";
+import { pushEvent, store, tombstoneKid } from "@/lib/server/store";
 import { isId, kidView } from "@/lib/server/views";
 import type { Gender, Level, Theme } from "@/lib/types";
 
@@ -89,15 +90,38 @@ export const DELETE = route(async (req: NextRequest, ctx: Ctx) => {
   const removed = await store.mutate((doc) => {
     const kid = doc.kids.find((k) => k.id === id && k.parentId === auth.parent.id);
     if (!kid) return false;
+    const devicesRemoved = doc.devices.filter((d) => d.kidId === kid.id).length;
     doc.kids = doc.kids.filter((k) => k.id !== kid.id);
     doc.devices = doc.devices.filter((d) => d.kidId !== kid.id);
     doc.pairings = doc.pairings.filter((p) => p.kidId !== kid.id);
+    doc.chats = (doc.chats ?? []).filter((message) => message.kidId !== kid.id);
+    // Remembered, so a device that still holds its signed cookie cannot bring
+    // the deleted profile back when the server is on temporary storage.
+    tombstoneKid(doc, kid.id);
     pushEvent(doc, {
       type: "kid.deleted",
       parentId: kid.parentId,
       kidId: kid.id,
       payload: { kidName: kid.name },
     });
+    recordBehaviour(
+      doc,
+      {
+        code: "kid.profile.deleted",
+        role: "parent",
+        parentId: kid.parentId,
+        kidId: kid.id,
+        kidName: kid.name,
+        vars: {
+          kidName: kid.name,
+          kidId: kid.id,
+          devicesRemoved,
+          parentId: kid.parentId,
+        },
+        context: { devicesRemoved },
+      },
+      { source: "server", force: true },
+    );
     return true;
   });
 

@@ -2,11 +2,26 @@
 
 import { useCallback, useState } from "react";
 import { actions, type Live } from "@/lib/client/api";
+import { reportBehaviour } from "@/lib/client/diagnostics";
 import { useToasts, type ToastItem } from "@/lib/client/useToasts";
 import { THEMES } from "@/components/KidApp";
+import BehaviourLogCard from "@/components/BehaviourLogCard";
+import ChatPanel from "@/components/ChatPanel";
+import FamilySettingsCard from "@/components/FamilySettingsCard";
 import ParentSecurity, { SaveRecoveryCodeDialog } from "@/components/ParentSecurity";
 import StorageBanner from "@/components/StorageBanner";
-import type { Gender, KidView, LiveEvent, PairingView, ParentAccount, PasskeyView, Theme } from "@/lib/types";
+import { t } from "@/lib/i18n";
+import { formatStamp, formatTimeAgo } from "@/lib/settings";
+import type {
+  FamilySettings,
+  Gender,
+  KidView,
+  LiveEvent,
+  PairingView,
+  ParentAccount,
+  PasskeyView,
+  Theme,
+} from "@/lib/types";
 
 const CHEERS = ["Great work! 🎉", "Keep going! 💪", "So proud of you! ❤️"];
 
@@ -15,6 +30,8 @@ export default function ParentDashboard({
   kids,
   pairings,
   passkeys,
+  settings,
+  onSettingsSaved,
   recoveryCode,
   onRecoveryCodeSaved,
   storageNotice,
@@ -24,6 +41,8 @@ export default function ParentDashboard({
   kids: KidView[];
   pairings: PairingView[];
   passkeys: PasskeyView[];
+  settings: FamilySettings;
+  onSettingsSaved: (next: FamilySettings) => void;
   /** A code issued at sign-up / after a reset that the parent still has to save. */
   recoveryCode?: string | null;
   onRecoveryCodeSaved?: () => void;
@@ -32,12 +51,14 @@ export default function ParentDashboard({
 }) {
   // A code created from the security card below, shown in the same dialog.
   const [newCode, setNewCode] = useState<string | null>(null);
+  const [tab, setTab] = useState<"overview" | "settings" | "log">("overview");
   const shownCode = recoveryCode ?? newCode;
   // Alerts about what children are doing, delivered live from the server.
   const toasts = useToasts(live.events, useCallback((event) => toastForParent(event), []), 8000);
 
   const waiting = kids.reduce((sum, kid) => sum + (kid.requestedMinutes > 0 ? 1 : 0), 0);
   const onlineDevices = kids.reduce((sum, kid) => sum + kid.devices.filter((d) => d.online).length, 0);
+  const unreadChat = kids.reduce((sum, kid) => sum + kid.chatUnread, 0);
 
   return (
     <main className="parent-shell">
@@ -64,6 +85,32 @@ export default function ParentDashboard({
         </div>
       </header>
 
+      <nav className="tabs" aria-label="Dashboard sections">
+        <button className={`tab ${tab === "overview" ? "active" : ""}`} onClick={() => setTab("overview")}>
+          Overview
+          {unreadChat > 0 && <span className="badge">💬 {unreadChat}</span>}
+        </button>
+        <button className={`tab ${tab === "settings" ? "active" : ""}`} onClick={() => setTab("settings")}>
+          Settings
+        </button>
+        <button className={`tab ${tab === "log" ? "active" : ""}`} onClick={() => setTab("log")}>
+          Behaviour log
+        </button>
+      </nav>
+
+      {tab === "settings" ? (
+        <>
+          <FamilySettingsCard settings={settings} onSaved={onSettingsSaved} />
+          <StorageBanner notice={storageNotice} onChecked={() => void live.refresh()} />
+          <ParentSecurity passkeys={passkeys} onChanged={() => void live.refresh()} onRecoveryCode={setNewCode} />
+        </>
+      ) : tab === "log" ? (
+        <>
+          <BehaviourLogCard settings={settings} />
+          <StorageBanner notice={storageNotice} onChecked={() => void live.refresh()} />
+        </>
+      ) : (
+      <>
       <StorageBanner notice={storageNotice} onChecked={() => void live.refresh()} />
 
       <section className="stat-row">
@@ -81,7 +128,7 @@ export default function ParentDashboard({
         </div>
       </section>
 
-      <LinkDeviceCard kids={kids} pairings={pairings} live={live} />
+      <LinkDeviceCard kids={kids} pairings={pairings} live={live} settings={settings} />
       <AddChildCard onDone={() => void live.refresh()} />
 
       {kids.length === 0 && (
@@ -91,10 +138,12 @@ export default function ParentDashboard({
       )}
 
       {kids.map((kid) => (
-        <KidCard key={kid.id} kid={kid} live={live} parentEmail={parent.email} />
+        <KidCard key={kid.id} kid={kid} live={live} parentEmail={parent.email} settings={settings} />
       ))}
 
       <ParentSecurity passkeys={passkeys} onChanged={() => void live.refresh()} onRecoveryCode={setNewCode} />
+      </>
+      )}
 
       {shownCode && (
         <SaveRecoveryCodeDialog
@@ -151,6 +200,15 @@ function toastForParent(event: LiveEvent): ToastItem | null {
         title: `A ${payload.label ?? "kid device"} wants to be linked`,
         body: `Code ${payload.code}`,
       };
+    case "behaviour.logged": {
+      const behaviour = event.payload as { code?: string; severity?: string; layman?: string };
+      return {
+        id: event.id,
+        emoji: behaviour.severity === "critical" ? "🚨" : "⚠️",
+        title: behaviour.layman ?? "Something was logged",
+        body: `${behaviour.code ?? ""} · see the Behaviour log tab`,
+      };
+    }
     default:
       return null;
   }
@@ -161,10 +219,12 @@ function LinkDeviceCard({
   kids,
   pairings,
   live,
+  settings,
 }: {
   kids: KidView[];
   pairings: PairingView[];
   live: Live;
+  settings: FamilySettings;
 }) {
   const [code, setCode] = useState("");
   const [lookup, setLookup] = useState<{ status: string; label?: string; code?: string } | null>(null);
@@ -234,7 +294,7 @@ function LinkDeviceCard({
                 key={pairing.code}
                 code={pairing.code}
                 label="Waiting to be linked"
-                note={`expires ${new Date(pairing.expiresAt).toLocaleTimeString()}`}
+                note={`expires ${formatStamp(pairing.expiresAt, settings)}`}
                 kids={kids}
                 selected={target[pairing.code] ?? kids[0]?.id ?? ""}
                 onSelect={(value) => setTarget((prev) => ({ ...prev, [pairing.code]: value }))}
@@ -425,12 +485,23 @@ function AddChildCard({ onDone }: { onDone: () => void }) {
   );
 }
 
-function KidCard({ kid, live, parentEmail }: { kid: KidView; live: Live; parentEmail: string }) {
+function KidCard({
+  kid,
+  live,
+  parentEmail,
+  settings,
+}: {
+  kid: KidView;
+  live: Live;
+  parentEmail: string;
+  settings: FamilySettings;
+}) {
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [cheer, setCheer] = useState("");
   const [bonus, setBonus] = useState(15);
+  const [showChat, setShowChat] = useState(false);
   const theme = THEMES[kid.theme];
   const accuracy = kid.attempted === 0 ? 0 : Math.round((kid.correct / kid.attempted) * 100);
 
@@ -459,10 +530,43 @@ function KidCard({ kid, live, parentEmail }: { kid: KidView; live: Live; parentE
             @{kid.username} · age {kid.age} · {theme.label}
           </p>
         </div>
-        <button className="link" onClick={() => setEditing((value) => !value)}>
-          {editing ? "Close" : "Edit"}
-        </button>
+        <span className="row gap">
+          <button className="link chat-button" onClick={() => setShowChat((value) => !value)}>
+            💬 {t(settings.locale, "chat.withKid", { name: kid.name })}
+            {kid.chatUnread > 0 && <span className="badge">{t(settings.locale, "chat.unread", { count: kid.chatUnread })}</span>}
+          </button>
+          <button className="link" onClick={() => setEditing((value) => !value)}>
+            {editing ? "Close" : "Edit"}
+          </button>
+        </span>
       </header>
+
+      {showChat && (
+        <ChatPanel
+          viewer="parent"
+          kidName={kid.name}
+          messages={kid.chat}
+          settings={settings}
+          unread={kid.chatUnread}
+          onSend={async (text, kind) => {
+            const result = await actions.chatSend(kid.id, text, kind);
+            if (!result.ok) return { ok: false as const, error: result.error };
+            reportBehaviour("chat.message_sent", {
+              from: "The parent",
+              to: kid.name,
+              kidId: kid.id,
+              chars: text.length,
+              kind,
+            });
+            await live.refresh();
+            return { ok: true as const };
+          }}
+          onMarkRead={() => {
+            void actions.chatRead(kid.id).then(() => live.refresh());
+          }}
+          onClose={() => setShowChat(false)}
+        />
+      )}
 
       <dl className="stats">
         <div>
@@ -570,7 +674,9 @@ function KidCard({ kid, live, parentEmail }: { kid: KidView; live: Live; parentE
             <span>
               <strong>{device.label}</strong>
               <small className="muted">
-                {device.online ? "online now" : `last seen ${timeAgo(device.lastSeenAt)}`}
+                {device.online ? "online now" : `last seen ${formatTimeAgo(device.lastSeenAt, settings)}`}
+                {" · "}
+                {formatStamp(device.createdAt, settings, { zone: false })}
               </small>
             </span>
             <button
@@ -594,7 +700,9 @@ function KidCard({ kid, live, parentEmail }: { kid: KidView; live: Live; parentE
                 {entry.kind === "answer" ? (entry.correct ? "✅" : "➖") : entry.kind === "cheer" ? "💬" : entry.kind === "device" ? "📱" : entry.kind === "level" ? "🏅" : "⏱️"}
               </span>
               <span>{entry.text}</span>
-              <small className="muted">{timeAgo(entry.at)}</small>
+              <small className="muted" title={formatStamp(entry.at, settings)}>
+                {formatTimeAgo(entry.at, settings)}
+              </small>
             </li>
           ))}
         </ul>
@@ -605,7 +713,9 @@ function KidCard({ kid, live, parentEmail }: { kid: KidView; live: Live; parentE
       {editing && <EditKid kid={kid} parentEmail={parentEmail} onDone={() => void live.refresh()} />}
       {!editing && kid.lastSeenAt && (
         <p className="muted small">
-          {kid.online ? `${kid.name} is using BrainyKids now` : `Last seen ${timeAgo(kid.lastSeenAt)}`}
+          {kid.online
+            ? `${kid.name} is using BrainyKids now`
+            : `Last seen ${formatStamp(kid.lastSeenAt, settings)}`}
         </p>
       )}
     </section>
@@ -728,15 +838,4 @@ function EditKid({ kid, parentEmail, onDone }: { kid: KidView; parentEmail: stri
       </div>
     </div>
   );
-}
-
-function timeAgo(ts: number): string {
-  const seconds = Math.max(1, Math.round((Date.now() - ts) / 1000));
-  if (seconds < 45) return "just now";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
-  const days = Math.round(hours / 24);
-  return days === 1 ? "yesterday" : `${days} days ago`;
 }
