@@ -50,9 +50,17 @@ export function parentOfKid(doc: DbDoc, kid: KidRecord): ParentRecord | undefine
   return doc.parents.find((p) => p.id === kid.parentId);
 }
 
-/** Links a kid profile to the device making the request and returns its cookie token. */
-export function linkDevice(doc: DbDoc, kid: KidRecord, label: string): { device: DeviceRecord; token: string } {
-  const token = newToken();
+/**
+ * Links a kid profile to the device making the request and returns its cookie
+ * token. A caller that already made a token (the fingerprint sign-in path, which
+ * has to prepare the cookie before the mutation runs) can pass it in.
+ */
+export function linkDevice(
+  doc: DbDoc,
+  kid: KidRecord,
+  label: string,
+  token: string = newToken(),
+): { device: DeviceRecord; token: string } {
   const device: DeviceRecord = {
     id: newId(),
     parentId: kid.parentId,

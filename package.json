@@ -6,7 +6,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "selftest": "tsx scripts/webauthn-selftest.ts",
+    "reset-password": "node scripts/reset-password.mjs"
   },
   "dependencies": {
     "dotenv": "17.3.1",
@@ -29,6 +31,7 @@
     "eslint-config-next": "16.2.6",
     "postcss": "8.5.8",
     "tailwindcss": "4.1.17",
+    "tsx": "^4.21.0",
     "typescript": "5.9.3"
   }
 }

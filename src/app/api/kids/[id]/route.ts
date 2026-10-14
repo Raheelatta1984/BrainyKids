@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { hashSecret, isValidPin, isValidUsername, normaliseUsername } from "@/lib/server/auth";
-import { error, json, num, readBody, str } from "@/lib/server/http";
+import { error, json, num, readBody, route, str } from "@/lib/server/http";
 import { parentAuth } from "@/lib/server/session";
 import { findKidByUsername } from "@/lib/server/service";
 import { pushEvent, store } from "@/lib/server/store";
@@ -15,7 +15,7 @@ const THEMES: Theme[] = ["space", "jungle", "robots", "dinos"];
 type Ctx = { params: Promise<{ id: string }> };
 
 /** Update a child profile (name, age, gender, theme, level) or reset their PIN. */
-export async function PATCH(req: NextRequest, ctx: Ctx) {
+export const PATCH = route(async (req: NextRequest, ctx: Ctx) => {
   const auth = await parentAuth(req);
   if (!auth) return error("Sign in as a parent first.", 401);
   const { id } = await ctx.params;
@@ -77,10 +77,10 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   const doc = await store.read();
   const fresh = doc.kids.find((k) => k.id === id);
   return json({ kid: fresh ? kidView(doc, fresh) : null });
-}
+});
 
 /** Remove a child profile, its device links and any pending link requests. */
-export async function DELETE(req: NextRequest, ctx: Ctx) {
+export const DELETE = route(async (req: NextRequest, ctx: Ctx) => {
   const auth = await parentAuth(req);
   if (!auth) return error("Sign in as a parent first.", 401);
   const { id } = await ctx.params;
@@ -103,4 +103,4 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
 
   if (!removed) return error("That child is not on this account.", 404);
   return json({ ok: true });
-}
+});

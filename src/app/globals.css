@@ -1000,3 +1000,137 @@ kbd {
     padding: 16px;
   }
 }
+
+/* ------------------------------------------------- sign-in, security, codes -- */
+
+.banner.warn {
+  background: #fff9db;
+  color: #8a6d00;
+}
+
+.forgot-link {
+  justify-self: start;
+  font-size: 0.9rem;
+}
+
+.fingerprint-block {
+  display: grid;
+  gap: 8px;
+  justify-items: stretch;
+}
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.divider::before,
+.divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.fingerprint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 12px 16px;
+  border-radius: 14px;
+  border: 2px solid var(--brand);
+  background: #eef2ff;
+  color: var(--brand-dark);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.fingerprint:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgb(59 91 219 / 18%);
+}
+
+.fingerprint:disabled {
+  opacity: 0.65;
+  cursor: progress;
+}
+
+.fingerprint-icon {
+  font-size: 1.2rem;
+}
+
+.security-card {
+  display: grid;
+  gap: 14px;
+}
+
+.security-section {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.security-section h3 {
+  margin: 0;
+}
+
+.passkey-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.passkey {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: #f8f9ff;
+  border: 1px solid var(--line);
+}
+
+.passkey > span:nth-child(2) {
+  display: grid;
+  gap: 2px;
+  flex: 1;
+}
+
+.passkey-icon {
+  font-size: 20px;
+}
+
+.recovery-box {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 16px;
+  background: #eef2ff;
+  border: 1px dashed var(--brand);
+}
+
+.recovery-code {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: clamp(1.3rem, 6vw, 1.9rem);
+  letter-spacing: 0.14em;
+  word-break: break-all;
+  color: var(--brand-dark);
+}
+
+code {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  background: #eef2ff;
+  border-radius: 6px;
+  padding: 1px 5px;
+}

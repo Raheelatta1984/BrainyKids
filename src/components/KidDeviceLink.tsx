@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { actions } from "@/lib/client/api";
+import { fingerprintBlockedReason, hasPlatformSensor, registerFingerprint, signInWithFingerprint } from "@/lib/client/webauthn";
 import QrCode from "@/components/QrCode";
 
 type Phase = "starting" | "waiting" | "expired" | "error";
@@ -14,6 +15,9 @@ type Phase = "starting" | "waiting" | "expired" | "error";
  * chooses which child this device belongs to. As soon as that happens this
  * screen becomes that child's app — the device stays in kid mode until a parent
  * signs it out again.
+ *
+ * A child who has already signed in once can turn on fingerprint unlock, and a
+ * parent can sign in with their own fingerprint if they have set one up.
  */
 export default function KidDeviceLink({
   onLinked,
@@ -34,9 +38,27 @@ export default function KidDeviceLink({
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  // After a successful kid sign-in: offer to save the fingerprint on this device.
+  const [offerFingerprint, setOfferFingerprint] = useState<string | null>(null);
+  const [fingerprint, setFingerprint] = useState({ sensor: false, any: false, why: null as string | null });
   // The QR code has to point at the server this device is talking to, so read the
   // origin on the client only (the code is empty during the first render).
   const [origin] = useState(() => (typeof window === "undefined" ? "" : window.location.origin));
+
+  // Is there a sensor here, and has a fingerprint been set up on this server?
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const why = fingerprintBlockedReason();
+      const sensor = await hasPlatformSensor();
+      const status = await actions.passkeyStatus();
+      if (cancelled) return;
+      setFingerprint({ sensor, any: status.ok && status.data.hasAny, why });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const startPairing = useCallback(
     async (rotate: boolean) => {
@@ -112,11 +134,64 @@ export default function KidDeviceLink({
       setError(result.error);
       return;
     }
+    // Offer fingerprint unlock before dropping into the quiz.
+    if (fingerprint.sensor) {
+      setOfferFingerprint(result.data.kid?.name ?? username);
+      return;
+    }
+    onLinked();
+  }
+
+  async function signInWithSensor() {
+    setBusy(true);
+    setError("");
+    const result = await signInWithFingerprint();
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    onLinked();
+  }
+
+  async function turnOnFingerprint() {
+    setBusy(true);
+    setError("");
+    const result = await registerFingerprint();
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
     onLinked();
   }
 
   const secondsLeft = Math.max(0, Math.floor((expiresAt - now) / 1000));
   const mmss = `${String(Math.floor(secondsLeft / 60)).padStart(2, "0")}:${String(secondsLeft % 60).padStart(2, "0")}`;
+
+  if (offerFingerprint) {
+    return (
+      <div className="auth-form">
+        <h2>Turn on fingerprint unlock?</h2>
+        <p className="muted">
+          Next time {offerFingerprint} opens BrainyKids on this device, a finger on the sensor is enough — no username or
+          PIN to type.
+        </p>
+        {error && <p className="banner error">{error}</p>}
+        <div className="row gap wrap">
+          <button type="button" className="fingerprint" disabled={busy} onClick={() => void turnOnFingerprint()}>
+            <span className="fingerprint-icon" aria-hidden="true">
+              🔒
+            </span>
+            {busy ? "Waiting for the sensor…" : "Turn on fingerprint"}
+          </button>
+          <button type="button" className="link" onClick={onLinked}>
+            Not now
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (mode === "kid-login") {
     return (
@@ -153,6 +228,17 @@ export default function KidDeviceLink({
             Use a QR code instead
           </button>
         </div>
+        {fingerprint.sensor && fingerprint.any && (
+          <div className="fingerprint-block">
+            <span className="divider">or</span>
+            <button type="button" className="fingerprint" disabled={busy} onClick={() => void signInWithSensor()}>
+              <span className="fingerprint-icon" aria-hidden="true">
+                🔒
+              </span>
+              Use fingerprint / face unlock
+            </button>
+          </div>
+        )}
       </form>
     );
   }
@@ -230,11 +316,15 @@ export default function KidDeviceLink({
             </button>
           )}
 
+          {error && <p className="banner error">{error}</p>}
+
           <button type="button" className="link" onClick={() => setMode("kid-login")}>
             Kid already has a username and PIN?
           </button>
         </>
       )}
+
+      {fingerprint.why && fingerprint.any && <p className="muted small">{fingerprint.why}</p>}
 
       <button type="button" className="link" onClick={onParentInstead}>
         Parent? Sign in on this device

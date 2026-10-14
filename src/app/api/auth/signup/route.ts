@@ -9,13 +9,14 @@ import {
   tokenHash,
 } from "@/lib/server/auth";
 import { PARENT_SESSION_DAYS } from "@/lib/server/constants";
-import { error, json, readBody, str } from "@/lib/server/http";
+import { error, json, readBody, route, str } from "@/lib/server/http";
+import { formatRecoveryCode, isValidPassword, newRecoveryCode, PASSWORD_MIN_LENGTH } from "@/lib/server/recovery";
 import { newId, sessionExpiry, store, trimSessions, type ParentRecord } from "@/lib/server/store";
 import { parentView } from "@/lib/server/views";
 
 export const runtime = "nodejs";
 
-export async function POST(req: NextRequest) {
+export const POST = route(async (req: NextRequest) => {
   const body = await readBody(req);
   const name = str(body.name).trim();
   const email = normaliseEmail(str(body.email));
@@ -23,17 +24,21 @@ export async function POST(req: NextRequest) {
 
   if (name.length < 2) return error("Please enter the parent's name.");
   if (!isValidEmail(email)) return error("Please enter a valid email address.");
-  if (password.length < 8) return error("Use a password with at least 8 characters.");
+  if (!isValidPassword(password)) return error(`Use a password with at least ${PASSWORD_MIN_LENGTH} characters.`);
 
   const token = newToken();
-  const emailHash = email;
+  // A code the parent can keep: it is the only way back into the account if the
+  // password is forgotten, because BrainyKids does not send email.
+  const recoveryCode = newRecoveryCode();
   const result = await store.mutate((doc) => {
-    if (doc.parents.some((p) => p.email === emailHash)) return { taken: true, parent: null };
+    if (doc.parents.some((p) => p.email === email)) return { taken: true, parent: null };
     const parent: ParentRecord = {
       id: newId(),
       name,
-      email: emailHash,
+      email,
       passwordHash: hashSecret(password),
+      recoveryHash: hashSecret(recoveryCode),
+      recoveryCreatedAt: Date.now(),
       createdAt: Date.now(),
     };
     doc.parents.push(parent);
@@ -51,7 +56,7 @@ export async function POST(req: NextRequest) {
     return error("An account with that email already exists. Try signing in instead.", 409);
   }
 
-  const res = json({ parent: parentView(result.parent) });
+  const res = json({ parent: parentView(result.parent), recoveryCode: formatRecoveryCode(recoveryCode) });
   res.cookies.set(COOKIES.parent, token, cookieOptions(PARENT_SESSION_DAYS * 24 * 60 * 60));
   return res;
-}
+});

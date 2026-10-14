@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { COOKIES, cookieOptions } from "@/lib/server/auth";
 import { DEVICE_DAYS } from "@/lib/server/constants";
-import { json } from "@/lib/server/http";
+import { json, route } from "@/lib/server/http";
 import { checkPairing } from "@/lib/server/pairing";
 import { store } from "@/lib/server/store";
 import { kidView } from "@/lib/server/views";
@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
  * Pass `wait=1` for a long poll so the sign-in happens the moment a parent taps
  * Approve, without hammering the server.
  */
-export async function GET(req: NextRequest) {
+export const GET = route(async (req: NextRequest) => {
   const wait = new URL(req.url).searchParams.get("wait") === "1";
   const deadline = Date.now() + (wait ? 20_000 : 0);
 
@@ -37,4 +37,4 @@ export async function GET(req: NextRequest) {
     res.cookies.set(COOKIES.device, check.token, cookieOptions(DEVICE_DAYS * 24 * 60 * 60));
   }
   return res;
-}
+});

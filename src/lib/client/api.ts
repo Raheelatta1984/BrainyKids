@@ -17,9 +17,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<ApiResult<T
       },
     });
     const text = await res.text();
-    const data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    let data: Record<string, unknown> = {};
+    try {
+      data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    } catch {
+      // A response that is not JSON (a proxy error page, for example).
+      data = {};
+    }
     if (!res.ok) {
-      return { ok: false, error: typeof data.error === "string" ? data.error : `Something went wrong (${res.status}).` };
+      if (typeof data.error === "string") return { ok: false, error: data.error };
+      return {
+        ok: false,
+        error:
+          res.status >= 500
+            ? "BrainyKids could not finish that request. Please try again in a moment."
+            : `Something went wrong (${res.status}).`,
+      };
     }
     return { ok: true, data: data as T };
   } catch {
@@ -51,11 +64,23 @@ export type AnswerResult = {
   duplicate: boolean;
 };
 
+export type PasskeyStatus = { parent: number; kid: number; hasAny: boolean };
+
 export const actions = {
   parentSignup: (input: { name: string; email: string; password: string }) =>
-    api.post<{ parent: ParentAccount }>("/api/auth/signup", input),
+    api.post<{ parent: ParentAccount; recoveryCode: string }>("/api/auth/signup", input),
   parentLogin: (input: { email: string; password: string }) => api.post<{ parent: ParentAccount }>("/api/auth/login", input),
   parentLogout: () => api.post<{ ok: true }>("/api/auth/logout"),
+  /** “Forgot password?”: a new password, using the recovery code. */
+  parentRecovery: (input: { email: string; code: string; password: string }) =>
+    api.post<{ parent: ParentAccount; recoveryCode: string }>("/api/auth/recovery", input),
+  /** Issues a fresh recovery code for the signed-in parent (shown only once). */
+  parentNewRecoveryCode: () => api.post<{ recoveryCode: string; createdAt: number }>("/api/auth/recovery-code"),
+  parentChangePassword: (input: { currentPassword: string; password: string }) =>
+    api.post<{ ok: true; recoveryCode: string }>("/api/auth/password", input),
+
+  passkeyStatus: () => api.get<PasskeyStatus>("/api/auth/passkey/status"),
+  passkeyRemove: (id: string) => api.del<{ ok: true }>(`/api/auth/passkey/${id}`),
 
   createKid: (input: {
     name: string;

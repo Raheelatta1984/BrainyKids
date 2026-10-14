@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { error, json, num, readBody } from "@/lib/server/http";
+import { error, json, num, readBody, route } from "@/lib/server/http";
 import { deviceAuth } from "@/lib/server/session";
 import { pushEvent, store } from "@/lib/server/store";
 import { kidView } from "@/lib/server/views";
@@ -8,7 +8,7 @@ import type { Level } from "@/lib/types";
 export const runtime = "nodejs";
 
 /** Remembers which level the child is working through, so the parent dashboard can show it. */
-export async function POST(req: NextRequest) {
+export const POST = route(async (req: NextRequest) => {
   const auth = await deviceAuth(req);
   if (!auth) return error("This device is not linked to a kid profile.", 401);
 
@@ -35,4 +35,4 @@ export async function POST(req: NextRequest) {
   const doc = await store.read();
   const kid = doc.kids.find((k) => k.id === auth.kid.id);
   return json({ kid: kid ? kidView(doc, kid) : null });
-}
+});

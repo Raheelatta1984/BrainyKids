@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import AuthGateway from "@/components/AuthGateway";
 import KidApp from "@/components/KidApp";
 import ParentDashboard from "@/components/ParentDashboard";
@@ -19,6 +19,9 @@ export default function AppShell() {
   const role = live.snapshot?.role ?? null;
   const refresh = live.refresh;
   const setNotice = live.setNotice;
+  // A recovery code handed out at sign-up or after a password reset. It is kept
+  // in memory only, long enough for the parent to save it.
+  const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
 
   const beat = useCallback(
     async (expectedRole: string | null) => {
@@ -57,7 +60,18 @@ export default function AppShell() {
   const snapshot = live.snapshot;
 
   if (snapshot && snapshot.role === "parent") {
-    return <ParentDashboard parent={snapshot.parent} kids={snapshot.kids} pairings={snapshot.pairings} live={live} />;
+    return (
+      <ParentDashboard
+        parent={snapshot.parent}
+        kids={snapshot.kids}
+        pairings={snapshot.pairings}
+        passkeys={snapshot.passkeys}
+        recoveryCode={recoveryCode}
+        onRecoveryCodeSaved={() => setRecoveryCode(null)}
+        storageNotice={snapshot.storage?.notice ?? null}
+        live={live}
+      />
+    );
   }
 
   if (snapshot && snapshot.role === "kid") {
@@ -68,6 +82,8 @@ export default function AppShell() {
     <AuthGateway
       hasAccounts={snapshot?.role === "guest" ? snapshot.hasAccounts : true}
       notice={live.notice}
+      storageNotice={snapshot?.storage?.notice ?? null}
+      onRecoveryCode={setRecoveryCode}
       onDone={() => {
         live.setNotice(null);
         void live.refresh();

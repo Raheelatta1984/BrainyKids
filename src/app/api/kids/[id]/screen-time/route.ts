@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { error, json, num, readBody, str } from "@/lib/server/http";
+import { error, json, num, readBody, route, str } from "@/lib/server/http";
 import { parentAuth } from "@/lib/server/session";
 import { resolveScreenTime } from "@/lib/server/service";
 import { store } from "@/lib/server/store";
@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 type Ctx = { params: Promise<{ id: string }> };
 
 /** Parent decision on screen time: approve, decline, or grant bonus minutes. */
-export async function POST(req: NextRequest, ctx: Ctx) {
+export const POST = route(async (req: NextRequest, ctx: Ctx) => {
   const auth = await parentAuth(req);
   if (!auth) return error("Sign in as a parent first.", 401);
   const { id } = await ctx.params;
@@ -33,4 +33,4 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const doc = await store.read();
   const fresh = doc.kids.find((k) => k.id === id);
   return json({ minutes: outcome.minutes, kid: fresh ? kidView(doc, fresh) : null });
-}
+});

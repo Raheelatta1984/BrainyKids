@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { error, json } from "@/lib/server/http";
+import { error, json, route } from "@/lib/server/http";
 import { requestScreenTime } from "@/lib/server/service";
 import { deviceAuth } from "@/lib/server/session";
 import { store } from "@/lib/server/store";
@@ -8,7 +8,7 @@ import { kidView } from "@/lib/server/views";
 export const runtime = "nodejs";
 
 /** Kid asks a parent to turn their points into screen time. */
-export async function POST(req: NextRequest) {
+export const POST = route(async (req: NextRequest) => {
   const auth = await deviceAuth(req);
   if (!auth) return error("This device is not linked to a kid profile.", 401);
 
@@ -23,4 +23,4 @@ export async function POST(req: NextRequest) {
   const doc = await store.read();
   const kid = doc.kids.find((k) => k.id === auth.kid.id);
   return json({ minutes, kid: kid ? kidView(doc, kid) : null });
-}
+});

@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { json } from "@/lib/server/http";
+import { json, route } from "@/lib/server/http";
 import { touchKid } from "@/lib/server/service";
 import { deviceAuth } from "@/lib/server/session";
 import { store } from "@/lib/server/store";
@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
  * Sent every ~20 seconds by a signed-in kid device so the parent dashboard can
  * show who is online, and so the app knows the device is still linked.
  */
-export async function POST(req: NextRequest) {
+export const POST = route(async (req: NextRequest) => {
   const auth = await deviceAuth(req);
   if (!auth) return json({ linked: false }, { status: 401 });
 
@@ -41,4 +41,4 @@ export async function POST(req: NextRequest) {
   });
 
   return json({ linked: true, kidId: auth.kid.id });
-}
+});
