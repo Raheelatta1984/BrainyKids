@@ -7,7 +7,9 @@ parent and kid sign-in, QR device linking and realtime progress updates.
 
 1. **Parent signs up first** (`/` → *Parent sign up*, or *Parent sign in* with an
    email and password). The parent account owns the children, their progress and
-   every device linked to the family.
+   every device linked to the family. Signing up hands the parent a one-time
+   **recovery code** to save — it is what *Forgot password?* asks for, because
+   BrainyKids does not send email.
 2. **The parent adds each child** on the dashboard: name, age, gender, theme plus
    a **kid username** and a **kid PIN**. No email is needed for a child.
 3. **The child's device is linked by QR code.** On the kid device tap
@@ -43,6 +45,35 @@ parent and kid sign-in, QR device linking and realtime progress updates.
 | goes offline/online | green online dot, "last seen …" |
 | gets a cheer / approval | toast + spoken message on the kid device |
 
+### Signing in
+
+- **Password.** Email + password, as above.
+- **Forgot password.** The sign-in screen has a *Forgot password?* link. The
+  parent enters their email, the **recovery code** they saved and a new password;
+  the old code is used up and a new one is shown. Five wrong codes lock the form
+  for 15 minutes, and a wrong email and a wrong code give the same answer so the
+  form cannot be used to discover who has an account.
+  No code to hand? Any device still signed in as a parent can issue a new one
+  under **Sign-in & security** on the dashboard, and whoever runs a self-hosted
+  copy can run `npm run reset-password -- parent@example.com "new password"`.
+- **Fingerprint / face unlock.** Uses WebAuthn passkeys: Safari prompts Touch ID
+  or Face ID, Chrome on Android the fingerprint sensor, Edge and Windows Hello
+  the device PIN or face. A parent turns it on from **Sign-in & security**;
+  a child turns it on right after signing in on their device, and can then tap
+  the sensor instead of typing a username and PIN. Passkeys are stored per web
+  address and are removed again from the same dashboard card.
+- **Changing the password** from the dashboard signs out every other device and
+  replaces the recovery code.
+
+### When storage is not writable
+
+If the project folder cannot be written to (a host with an ephemeral, read-only
+filesystem and no `DATABASE_URL`), BrainyKids keeps working by saving to a
+temporary folder and says so on the dashboard, instead of failing. Sign-up and
+sign-in return a plain-language error — never an empty `500` page — when storage
+really is unreachable, for example a `DATABASE_URL` pointing at a database that
+is down.
+
 ### Question rules
 
 Children aged 4 and under get early questions. Older children get a mix of
@@ -74,6 +105,14 @@ npm run build
 npm start
 ```
 
+`npm run selftest` exercises the fingerprint / face unlock verification without a
+browser, and `npm run reset-password -- <email> "<new password>"` resets a parent
+password straight from the command line (see *Signing in* above).
+
+Fingerprint unlock needs a secure address — `https://` or `http://localhost` —
+and cannot run inside an embedded frame, so open the app in its own browser tab
+to try it.
+
 ### Storage
 
 Accounts, child profiles, device links and the realtime event log live on the
@@ -103,6 +142,9 @@ device, the parent's phone and any other device that signs in.
 | API | Purpose |
 | --- | --- |
 | `POST /api/auth/signup`, `/login`, `/logout` | Parent account + session cookie |
+| `POST /api/auth/recovery` | *Forgot password?* — email + recovery code + new password |
+| `POST /api/auth/recovery-code`, `/api/auth/password` | Issue a new recovery code, or change the password |
+| `GET /api/auth/passkey/status`, `POST /api/auth/passkey/register\|login/options`, `…/verify`, `DELETE /api/auth/passkey/<id>` | Fingerprint / face unlock (WebAuthn) |
 | `GET /api/snapshot` | Everything this device is allowed to see |
 | `GET /api/events` | Server-Sent Events stream (realtime) |
 | `POST /api/kids`, `PATCH|DELETE /api/kids/<id>` | Child profiles |
@@ -113,9 +155,17 @@ device, the parent's phone and any other device that signs in.
 | `POST /api/kid-session/login`, `/logout`, `/heartbeat`, `/answers`, `/screen-time`, `/level` | Kid device session and quiz traffic |
 
 Sessions are HTTP-only cookies: `bk_parent` (parent account), `bk_device` (a
-linked kid device), `bk_pairing` (a device waiting to be linked). Kid PINs and
-parent passwords are stored as salted `scrypt` hashes; pairing secrets are stored
-as SHA-256 hashes and only the device that asked for a code can claim it.
+linked kid device), `bk_pairing` (a device waiting to be linked). Kid PINs,
+parent passwords and recovery codes are stored as salted `scrypt` hashes;
+pairing secrets are stored as SHA-256 hashes and only the device that asked for a
+code can claim it.
+
+Fingerprint / face unlock is verified on the server (`src/lib/server/webauthn.ts`):
+challenges are single-use and expire after five minutes, the origin and relying
+party id must match the web address that asked, and the signature is checked
+against the stored COSE public key. Attestation certificate chains are not
+validated. Everything in that module is covered by `npm run selftest`, which
+plays the part of an authenticator with Node's own crypto (no browser needed).
 
 ## Deploy on Vercel
 

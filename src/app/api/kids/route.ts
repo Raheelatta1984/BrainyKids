@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { hashSecret, isValidPin, isValidUsername, normaliseUsername } from "@/lib/server/auth";
-import { error, json, num, readBody, str } from "@/lib/server/http";
+import { error, json, num, readBody, route, str } from "@/lib/server/http";
 import { parentAuth } from "@/lib/server/session";
 import { createKidRecord, findKidByUsername } from "@/lib/server/service";
 import { pushEvent, store } from "@/lib/server/store";
@@ -12,7 +12,7 @@ export const runtime = "nodejs";
 const GENDERS: Gender[] = ["boy", "girl", "prefer-not-to-say"];
 const THEMES: Theme[] = ["space", "jungle", "robots", "dinos"];
 
-export async function POST(req: NextRequest) {
+export const POST = route(async (req: NextRequest) => {
   const auth = await parentAuth(req);
   if (!auth) return error("Sign in as a parent first.", 401);
 
@@ -49,4 +49,4 @@ export async function POST(req: NextRequest) {
 
   if (result.taken || !result.kid) return error("That kid username is already taken. Try another one.", 409);
   return json({ kid: kidView(await store.read(), result.kid) });
-}
+});

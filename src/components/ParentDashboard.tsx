@@ -4,7 +4,8 @@ import { useCallback, useState } from "react";
 import { actions, type Live } from "@/lib/client/api";
 import { useToasts, type ToastItem } from "@/lib/client/useToasts";
 import { THEMES } from "@/components/KidApp";
-import type { Gender, KidView, LiveEvent, PairingView, ParentAccount, Theme } from "@/lib/types";
+import ParentSecurity, { SaveRecoveryCodeDialog } from "@/components/ParentSecurity";
+import type { Gender, KidView, LiveEvent, PairingView, ParentAccount, PasskeyView, Theme } from "@/lib/types";
 
 const CHEERS = ["Great work! 🎉", "Keep going! 💪", "So proud of you! ❤️"];
 
@@ -12,13 +13,25 @@ export default function ParentDashboard({
   parent,
   kids,
   pairings,
+  passkeys,
+  recoveryCode,
+  onRecoveryCodeSaved,
+  storageNotice,
   live,
 }: {
   parent: ParentAccount;
   kids: KidView[];
   pairings: PairingView[];
+  passkeys: PasskeyView[];
+  /** A code issued at sign-up / after a reset that the parent still has to save. */
+  recoveryCode?: string | null;
+  onRecoveryCodeSaved?: () => void;
+  storageNotice?: string | null;
   live: Live;
 }) {
+  // A code created from the security card below, shown in the same dialog.
+  const [newCode, setNewCode] = useState<string | null>(null);
+  const shownCode = recoveryCode ?? newCode;
   // Alerts about what children are doing, delivered live from the server.
   const toasts = useToasts(live.events, useCallback((event) => toastForParent(event), []), 8000);
 
@@ -50,6 +63,8 @@ export default function ParentDashboard({
         </div>
       </header>
 
+      {storageNotice && <p className="banner warn">💾 {storageNotice}</p>}
+
       <section className="stat-row">
         <div className="stat">
           <span className="stat-value">{kids.length}</span>
@@ -77,6 +92,18 @@ export default function ParentDashboard({
       {kids.map((kid) => (
         <KidCard key={kid.id} kid={kid} live={live} parentEmail={parent.email} />
       ))}
+
+      <ParentSecurity passkeys={passkeys} onChanged={() => void live.refresh()} onRecoveryCode={setNewCode} />
+
+      {shownCode && (
+        <SaveRecoveryCodeDialog
+          code={shownCode}
+          onClose={() => {
+            setNewCode(null);
+            onRecoveryCodeSaved?.();
+          }}
+        />
+      )}
 
       <div className="toasts" aria-live="polite">
         {toasts.map((toast) => (
@@ -661,7 +688,9 @@ function EditKid({ kid, parentEmail, onDone }: { kid: KidView; parentEmail: stri
       {error && <p className="banner error">{error}</p>}
 
       <p className="muted small">
-        Forgotten password for {parentEmail}? Signing a child out of kid mode needs the parent account password.
+        Forgotten password for {parentEmail}? Use <strong>Sign-in &amp; security</strong> below to change it, or the
+        recovery code from the sign-in screen if you are locked out. Signing a child out of kid mode needs the parent
+        account password.
       </p>
 
       <div className="danger">

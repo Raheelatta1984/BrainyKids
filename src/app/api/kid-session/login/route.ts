@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { COOKIES, cookieOptions, deviceLabel, isValidPin, normaliseUsername, verifySecret } from "@/lib/server/auth";
 import { DEVICE_DAYS } from "@/lib/server/constants";
-import { error, json, readBody, str } from "@/lib/server/http";
+import { error, json, readBody, route, str } from "@/lib/server/http";
 import { findKidByUsername, linkDevice } from "@/lib/server/service";
 import { pushEvent, store } from "@/lib/server/store";
 import { kidView } from "@/lib/server/views";
@@ -12,7 +12,7 @@ export const runtime = "nodejs";
  * Kid sign-in on a device: username + PIN. Signing in locks this device to that
  * child profile until a parent signs it out.
  */
-export async function POST(req: NextRequest) {
+export const POST = route(async (req: NextRequest) => {
   const body = await readBody(req);
   const username = normaliseUsername(str(body.username));
   const pin = str(body.pin).trim();
@@ -42,4 +42,4 @@ export async function POST(req: NextRequest) {
   const res = json({ kid: kid ? kidView(doc, kid) : null });
   res.cookies.set(COOKIES.device, outcome.token, cookieOptions(DEVICE_DAYS * 24 * 60 * 60));
   return res;
-}
+});

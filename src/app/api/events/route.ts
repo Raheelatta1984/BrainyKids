@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { error } from "@/lib/server/http";
+import { error, route } from "@/lib/server/http";
 import { deviceAuth, parentAuth } from "@/lib/server/session";
 import { eventsSince, store, type EventRecord } from "@/lib/server/store";
 
@@ -17,7 +17,7 @@ const KEEPALIVE_MS = 15_000;
  * the child that is signed in on the device. If a stream cannot be opened the
  * browser client falls back to polling /api/snapshot.
  */
-export async function GET(req: NextRequest) {
+export const GET = route(async (req: NextRequest) => {
   const doc = await store.read();
   const parent = await parentAuth(req, doc);
   const device = parent ? null : await deviceAuth(req, doc);
@@ -126,4 +126,4 @@ export async function GET(req: NextRequest) {
       "x-accel-buffering": "no",
     },
   });
-}
+});

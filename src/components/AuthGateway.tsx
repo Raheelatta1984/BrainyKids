@@ -2,19 +2,25 @@
 
 import { useState } from "react";
 import ParentAuth, { type ParentAuthMode } from "@/components/ParentAuth";
+import ForgotPassword from "@/components/ForgotPassword";
 import KidDeviceLink from "@/components/KidDeviceLink";
 
-type View = "choose" | "parent" | "kid";
+type View = "choose" | "parent" | "kid" | "recovery";
 
 /** First screen on any device: parents sign up or sign in, kids link their device. */
 export default function AuthGateway({
   hasAccounts,
   onDone,
+  onRecoveryCode,
   notice,
+  storageNotice,
 }: {
   hasAccounts: boolean;
   onDone: () => void;
+  /** A freshly issued recovery code the parent has to save. */
+  onRecoveryCode: (code: string) => void;
   notice?: string | null;
+  storageNotice?: string | null;
 }) {
   const [view, setView] = useState<View>("choose");
   const [mode, setMode] = useState<ParentAuthMode>(hasAccounts ? "login" : "signup");
@@ -29,6 +35,7 @@ export default function AuthGateway({
 
       <section className="card gateway-card">
         {notice && <p className="banner info">{notice}</p>}
+        {storageNotice && <p className="banner warn">💾 {storageNotice}</p>}
 
         {view === "choose" && (
           <>
@@ -55,7 +62,20 @@ export default function AuthGateway({
             mode={mode}
             onModeChange={setMode}
             onSuccess={onDone}
+            onRecoveryCode={onRecoveryCode}
+            onForgotPassword={() => setView("recovery")}
             onBack={() => setView("choose")}
+          />
+        )}
+
+        {view === "recovery" && (
+          <ForgotPassword
+            onDone={onDone}
+            onRecoveryCode={onRecoveryCode}
+            onBack={() => {
+              setMode("login");
+              setView("parent");
+            }}
           />
         )}
 

@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { newToken, normaliseCode, tokenHash } from "@/lib/server/auth";
-import { error, json, readBody, str } from "@/lib/server/http";
+import { error, json, readBody, route, str } from "@/lib/server/http";
 import { parentAuth } from "@/lib/server/session";
 import { newId, pushEvent, store, type DeviceRecord } from "@/lib/server/store";
 import { isId, kidView } from "@/lib/server/views";
@@ -11,7 +11,7 @@ export const runtime = "nodejs";
  * A parent links a kid device to one of their children. The device is waiting on
  * /api/pairing/status and picks up its session as soon as this returns.
  */
-export async function POST(req: NextRequest) {
+export const POST = route(async (req: NextRequest) => {
   const auth = await parentAuth(req);
   if (!auth) return error("Sign in as a parent first.", 401);
 
@@ -75,4 +75,4 @@ export async function POST(req: NextRequest) {
     device: { id: outcome.device.id, label: outcome.device.label },
     kid: kid ? kidView(doc, kid) : null,
   });
-}
+});

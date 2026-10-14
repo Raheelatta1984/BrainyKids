@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { COOKIES, cookieOptions, verifySecret } from "@/lib/server/auth";
-import { error, json, readBody, str } from "@/lib/server/http";
+import { error, json, readBody, route, str } from "@/lib/server/http";
 import { parentOfKid, unlinkDevice } from "@/lib/server/service";
 import { deviceAuth } from "@/lib/server/session";
 import { store } from "@/lib/server/store";
@@ -12,7 +12,7 @@ export const runtime = "nodejs";
  * cannot leave kid mode on their own: it needs the parent account password
  * (or a parent can use "Sign out" on a device from the parent dashboard).
  */
-export async function POST(req: NextRequest) {
+export const POST = route(async (req: NextRequest) => {
   const body = await readBody(req);
   const password = str(body.parentPassword);
   if (!password) return error("Enter the parent password to sign out of kid mode.");
@@ -40,4 +40,4 @@ export async function POST(req: NextRequest) {
   const res = json({ ok: true });
   res.cookies.set(COOKIES.device, "", cookieOptions(0));
   return res;
-}
+});

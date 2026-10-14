@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { COOKIES, cookieOptions, deviceLabel, newPairingCode, newToken, normaliseCode, tokenHash } from "@/lib/server/auth";
 import { PAIRING_TTL_MS } from "@/lib/server/constants";
-import { json } from "@/lib/server/http";
+import { json, route } from "@/lib/server/http";
 import { checkPairing } from "@/lib/server/pairing";
 import { findPairing, pairingCredentials } from "@/lib/server/session";
 import { newId, pushEvent, store, UNCLAIMED, type PairingRecord } from "@/lib/server/store";
@@ -14,7 +14,7 @@ const PAIRING_COOKIE_SECONDS = 60 * 60;
  * Called by a kid device that wants to be linked. Returns a short code (shown as
  * a QR code and as text) that a parent approves from their own phone.
  */
-export async function POST(req: NextRequest) {
+export const POST = route(async (req: NextRequest) => {
   const rotate = new URL(req.url).searchParams.get("rotate") === "1";
 
   // Already approved on a previous poll? Hand the device its session immediately.
@@ -65,4 +65,4 @@ export async function POST(req: NextRequest) {
     res.cookies.set(COOKIES.pairing, `${outcome.code}.${secret}`, cookieOptions(PAIRING_COOKIE_SECONDS));
   }
   return res;
-}
+});

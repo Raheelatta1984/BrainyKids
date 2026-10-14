@@ -52,6 +52,29 @@ export type KidView = {
   devices: DeviceView[];
 };
 
+/** A fingerprint / face unlock credential (WebAuthn passkey) set up in the family. */
+export type PasskeyView = {
+  id: string;
+  /** Device description, for example “iPhone · Safari”. */
+  label: string;
+  /** A parent's own credential, or one that signs a child in on their device. */
+  kind: "parent" | "kid";
+  kidId?: string;
+  kidName?: string;
+  /** The authenticator stores the key in the cloud (iCloud Keychain, Google Password Manager). */
+  synced: boolean;
+  createdAt: number;
+  lastUsedAt: number;
+};
+
+/** Where the server keeps its data, so the UI can warn when it is temporary. */
+export type StorageState = {
+  driver: "file" | "postgres";
+  durable: boolean;
+  location: string;
+  notice: string | null;
+};
+
 export type PairingStatus = "pending" | "approved" | "expired";
 
 export type PairingView = {
@@ -90,17 +113,20 @@ export type LiveEventType =
 
 /** Everything a signed-in browser needs, in one round trip. */
 export type Snapshot =
-  | { role: "guest"; hasAccounts: boolean }
+  | { role: "guest"; hasAccounts: boolean; storage?: StorageState }
   | {
       role: "parent";
       parent: ParentAccount;
       kids: KidView[];
       pairings: PairingView[];
+      passkeys: PasskeyView[];
+      storage?: StorageState;
     }
   | {
       role: "kid";
       kid: KidView;
       parent: { name: string; email: string };
+      storage?: StorageState;
     };
 
 export const ONLINE_WINDOW_MS = 75_000;
