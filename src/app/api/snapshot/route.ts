@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { json, route } from "@/lib/server/http";
 import { passkeysForParent } from "@/lib/server/passkeys";
-import { store } from "@/lib/server/store";
+import { StorageError, store } from "@/lib/server/store";
 import { deviceAuth, parentAuth } from "@/lib/server/session";
 import { kidView, parentView, pendingPairings } from "@/lib/server/views";
 import type { Snapshot } from "@/lib/types";
@@ -14,9 +14,28 @@ export const dynamic = "force-dynamic";
  * everything that screen needs. Realtime updates arrive from /api/events.
  */
 export const GET = route(async (req: NextRequest) => {
-  const doc = await store.read();
-  const now = Date.now();
   const storage = store.info();
+  let doc;
+  try {
+    doc = await store.read();
+  } catch (cause) {
+    if (cause instanceof StorageError) {
+      const fallbackSnapshot: Snapshot = {
+        role: "guest",
+        hasAccounts: false,
+        storage: {
+          ...storage,
+          durable: false,
+          notice: cause.userMessage,
+        },
+      };
+      return json(fallbackSnapshot);
+    }
+    throw cause;
+  }
+
+  const now = Date.now();
+  const latestStorage = store.info();
 
   const parent = await parentAuth(req, doc);
   if (parent) {
@@ -27,7 +46,7 @@ export const GET = route(async (req: NextRequest) => {
       kids: kids.map((k) => kidView(doc, k, now)),
       pairings: pendingPairings(doc, parent.parent.id, now),
       passkeys: passkeysForParent(doc.passkeys, parent.parent.id, doc.kids),
-      storage,
+      storage: latestStorage,
     };
     return json(snapshot);
   }
@@ -39,11 +58,11 @@ export const GET = route(async (req: NextRequest) => {
       role: "kid",
       kid: kidView(doc, device.kid, now),
       parent: owner ? { name: owner.name, email: owner.email } : { name: "Parent", email: "" },
-      storage,
+      storage: latestStorage,
     };
     return json(snapshot);
   }
 
-  const snapshot: Snapshot = { role: "guest", hasAccounts: doc.parents.length > 0, storage };
+  const snapshot: Snapshot = { role: "guest", hasAccounts: doc.parents.length > 0, storage: latestStorage };
   return json(snapshot);
 });

@@ -5,6 +5,7 @@ import { actions, type Live } from "@/lib/client/api";
 import { useToasts, type ToastItem } from "@/lib/client/useToasts";
 import { THEMES } from "@/components/KidApp";
 import ParentSecurity, { SaveRecoveryCodeDialog } from "@/components/ParentSecurity";
+import StorageBanner from "@/components/StorageBanner";
 import type { Gender, KidView, LiveEvent, PairingView, ParentAccount, PasskeyView, Theme } from "@/lib/types";
 
 const CHEERS = ["Great work! 🎉", "Keep going! 💪", "So proud of you! ❤️"];
@@ -63,7 +64,7 @@ export default function ParentDashboard({
         </div>
       </header>
 
-      {storageNotice && <p className="banner warn">💾 {storageNotice}</p>}
+      <StorageBanner notice={storageNotice} onChecked={() => void live.refresh()} />
 
       <section className="stat-row">
         <div className="stat">

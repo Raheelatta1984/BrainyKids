@@ -3,22 +3,24 @@
 // The whole family/account document is stored as one JSON value. Two drivers are
 // provided:
 //   * a JSON file on disk (default, used for local development and demos)
-//   * Postgres, when DATABASE_URL is set (used for hosted deployments)
+//   * Postgres / Neon, when a database URL is set (used for Vercel and other
+//     hosted deployments)
 //
-// Writes are serialised through a promise queue so concurrent requests cannot
-// interleave a read-modify-write on the same process.
+// Writes are serialised through a promise queue per process, and through a
+// `SELECT ... FOR UPDATE` row lock in Postgres so concurrent serverless
+// instances cannot overwrite each other.
 //
 // Storage problems are reported as a `StorageError` carrying a message that is
 // safe (and useful) to show a parent, instead of an empty 500 page. The file
 // driver additionally falls back to a writable temporary directory when the
 // project folder is read-only — which is what happens on hosters with an
-// ephemeral, read-only filesystem and no DATABASE_URL configured.
+// ephemeral, read-only filesystem and no Postgres database configured.
 
 import fsSync, { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Gender, Level, Theme } from "@/lib/types";
+import type { Gender, Level, StorageState, Theme } from "@/lib/types";
 
 /** A storage failure with a message that can be shown to the person using the app. */
 export class StorageError extends Error {
@@ -213,19 +215,153 @@ export function newId(): string {
 }
 
 // ---------------------------------------------------------------------------
+// Database URL discovery & Neon / Vercel Postgres normalisation
+// ---------------------------------------------------------------------------
+
+/**
+ * Environment variables commonly created when attaching Neon, Vercel Postgres,
+ * or Supabase in the Vercel dashboard.
+ */
+const DATABASE_ENV_KEYS = [
+  "DATABASE_URL",
+  "POSTGRES_URL",
+  "NEON_DATABASE_URL",
+  "POSTGRES_PRISMA_URL",
+  "DATABASE_URL_UNPOOLED",
+  "POSTGRES_URL_NON_POOLING",
+  "NEON_POSTGRES_URL",
+] as const;
+
+export type ResolvedDatabaseEnv = {
+  envVar: string;
+  rawUrl: string;
+};
+
+/**
+ * Finds a configured Postgres / Neon connection string from the environment.
+ * Also supports custom prefixes chosen when linking a Neon store in Vercel
+ * (for example `STORAGE_DATABASE_URL` or `BRAINYKIDS_POSTGRES_URL`).
+ */
+export function resolveDatabaseEnv(): ResolvedDatabaseEnv | null {
+  for (const key of DATABASE_ENV_KEYS) {
+    const val = process.env[key]?.trim();
+    if (val) return { envVar: key, rawUrl: val };
+  }
+
+  for (const [key, val] of Object.entries(process.env)) {
+    const trimmed = val?.trim();
+    if (!trimmed) continue;
+    if (
+      (key.endsWith("_DATABASE_URL") || key.endsWith("_POSTGRES_URL") || key.endsWith("_POSTGRES_PRISMA_URL")) &&
+      /^(postgres(ql)?|psql\s)/i.test(trimmed.replace(/^['"]|['"]$/g, ""))
+    ) {
+      return { envVar: key, rawUrl: trimmed };
+    }
+  }
+
+  const host = process.env.PGHOST?.trim();
+  const user = process.env.PGUSER?.trim();
+  const password = process.env.PGPASSWORD?.trim();
+  if (host && user && password) {
+    const port = process.env.PGPORT?.trim() || "5432";
+    const db = process.env.PGDATABASE?.trim() || "neondb";
+    return {
+      envVar: "PGHOST",
+      rawUrl: `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(db)}?sslmode=require`,
+    };
+  }
+
+  return null;
+}
+
+export type NormalisedDatabaseConfig = {
+  connectionString: string;
+  enableChannelBinding: boolean;
+  safeLocation: string;
+  valid: boolean;
+};
+
+/**
+ * Cleans up connection strings copied from Neon, Vercel or Supabase:
+ *  - strips a leading `psql ` command or `DATABASE_URL=` prefix if pasted accidentally
+ *  - removes wrapping single or double quotes
+ *  - enables SCRAM channel binding when `channel_binding=require` is present (Neon default)
+ *  - sets `uselibpqcompat=true` with `sslmode=require` so `pg` connects cleanly to
+ *    cloud Postgres poolers without Node SSL warnings or certificate chain rejections
+ */
+export function normaliseDatabaseConfig(rawInput: string): NormalisedDatabaseConfig {
+  let cleaned = rawInput.trim();
+
+  // Strip accidental `KEY=value` prefix if someone pasted the whole .env line into Vercel.
+  cleaned = cleaned.replace(/^[A-Z0-9_]+=\s*/i, "");
+
+  // Strip a leading `psql` command if someone copied the `psql 'postgresql://...'` snippet from Neon.
+  if (/^psql\s+/i.test(cleaned)) {
+    cleaned = cleaned.replace(/^psql\s+(?:-[a-zA-Z]\s+)*\s*/i, "").trim();
+  }
+
+  // Strip matching outer quotes.
+  if ((cleaned.startsWith("'") && cleaned.endsWith("'")) || (cleaned.startsWith('"') && cleaned.endsWith('"'))) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+
+  try {
+    const parsed = new URL(cleaned);
+    if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
+      return {
+        connectionString: cleaned,
+        enableChannelBinding: false,
+        safeLocation: "the configured database",
+        valid: false,
+      };
+    }
+
+    const channelBinding = parsed.searchParams.get("channel_binding")?.toLowerCase();
+    const enableChannelBinding = channelBinding === "require" || channelBinding === "prefer";
+
+    const host = parsed.hostname.toLowerCase();
+    const isCloudHost =
+      host.endsWith(".neon.tech") ||
+      host.endsWith(".vercel-storage.com") ||
+      host.endsWith(".supabase.co") ||
+      host.endsWith(".supabase.com") ||
+      host.endsWith(".railway.app") ||
+      host.endsWith(".render.com") ||
+      host.endsWith(".aivencloud.com");
+
+    const sslmode = parsed.searchParams.get("sslmode")?.toLowerCase();
+    if (!sslmode && isCloudHost) {
+      parsed.searchParams.set("sslmode", "require");
+      parsed.searchParams.set("uselibpqcompat", "true");
+    } else if (
+      (sslmode === "require" || sslmode === "prefer" || sslmode === "verify-ca") &&
+      !parsed.searchParams.has("uselibpqcompat")
+    ) {
+      parsed.searchParams.set("uselibpqcompat", "true");
+    }
+
+    return {
+      connectionString: parsed.toString(),
+      enableChannelBinding,
+      safeLocation: `${parsed.hostname}${parsed.pathname}`,
+      valid: true,
+    };
+  } catch {
+    return {
+      connectionString: cleaned,
+      enableChannelBinding: false,
+      safeLocation: "the configured database",
+      valid: false,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Drivers
 // ---------------------------------------------------------------------------
 
 /** Where the data lives, described in a way that is safe to show in the UI. */
-export type StorageInfo = {
-  driver: "file" | "postgres";
-  /** True when the data survives a restart, a redeploy or another server instance. */
-  durable: boolean;
-  /** Directory or database in use. Never contains credentials. */
-  location: string;
-  /** A plain-language note for the parent dashboard, when something is not ideal. */
-  notice: string | null;
-};
+export type StorageInfo = StorageState;
 
 type Driver = {
   name: "file" | "postgres";
@@ -235,6 +371,8 @@ type Driver = {
   cacheTtl: number;
   load: () => Promise<DbDoc | null>;
   save: (doc: DbDoc) => Promise<void>;
+  /** Optional atomic read-modify-write transaction (used by Postgres). */
+  transact?: <T>(fn: (doc: DbDoc) => T | Promise<T>) => Promise<{ doc: DbDoc; result: T }>;
   info: () => StorageInfo;
 };
 
@@ -269,13 +407,16 @@ function canWrite(target: string): boolean {
 
 const READ_ONLY_NOTICE =
   "This server's project folder is read-only, so BrainyKids is keeping accounts in a temporary folder. " +
-  "They can disappear when the server restarts — set DATABASE_URL for permanent storage.";
+  "They can disappear when the server restarts — attach a Neon or Vercel Postgres database (DATABASE_URL) for permanent storage.";
 
 function fileDriver(): Driver {
-  const configuredDir = process.env.BRAINYKIDS_DATA_DIR ?? path.join(process.cwd(), ".data");
+  const explicitDir = process.env.BRAINYKIDS_DATA_DIR?.trim();
+  const isServerlessHost =
+    !explicitDir && Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY);
+  const configuredDir = explicitDir || path.join(process.cwd(), ".data");
   const fallbackDir = path.join(os.tmpdir(), "brainykids-data");
-  let dir = configuredDir;
-  let usingFallback = false;
+  let dir = isServerlessHost ? fallbackDir : configuredDir;
+  let usingFallback = isServerlessHost;
 
   async function readFrom(target: string): Promise<DbDoc | null> {
     try {
@@ -290,7 +431,7 @@ function fileDriver(): Driver {
   async function writeTo(target: string, doc: DbDoc): Promise<void> {
     await fs.mkdir(target, { recursive: true });
     const file = path.join(target, "brainykids.json");
-    const tmp = `${file}.${process.pid}.tmp`;
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
     await fs.writeFile(tmp, JSON.stringify(doc, null, 2), "utf8");
     await fs.rename(tmp, file);
   }
@@ -317,7 +458,7 @@ function fileDriver(): Driver {
 
   return {
     name: "file",
-    cacheTtl: Number.POSITIVE_INFINITY,
+    cacheTtl: usingFallback ? 1_000 : Number.POSITIVE_INFINITY,
     async load() {
       try {
         return await readFrom(dir);
@@ -358,6 +499,8 @@ function fileDriver(): Driver {
         durable: configuredWritable,
         location: configuredWritable ? configuredDir : fallbackDir,
         notice: configuredWritable ? null : READ_ONLY_NOTICE,
+        envVar: null,
+        ephemeralHost: !configuredWritable,
       };
     },
   };
@@ -367,44 +510,121 @@ const DB_UNREACHABLE =
   "BrainyKids could not reach its database, so nothing could be saved. " +
   "Check that DATABASE_URL is correct and that the database is running, then try again.";
 
-function postgresDriver(connectionString: string): Driver {
+function describeDatabaseError(error: unknown, envVar: string, location: string): string {
+  const pgCode = (error as { code?: string } | undefined)?.code;
+  if (pgCode === "28P01" || pgCode === "28000") {
+    return (
+      `BrainyKids could not sign in to the database at ${location} (${envVar}: password or username rejected). ` +
+      "Copy a fresh connection string from Neon / Vercel Storage and redeploy."
+    );
+  }
+  if (pgCode === "3D000") {
+    return (
+      `The database named in ${envVar} (${location}) does not exist yet. ` +
+      "Check the database name at the end of your Neon / Postgres connection string."
+    );
+  }
+  return DB_UNREACHABLE;
+}
+
+function isTransientDbError(error: unknown): boolean {
+  const code = (error as { code?: string } | undefined)?.code;
+  const msg = error instanceof Error ? error.message : String(error ?? "");
+  if (
+    code === "ECONNRESET" ||
+    code === "ETIMEDOUT" ||
+    code === "EPIPE" ||
+    code === "57P01" ||
+    code === "57P03" ||
+    code === "08006" ||
+    code === "08001" ||
+    code === "08003"
+  ) {
+    return true;
+  }
+  return /Connection terminated|timeout expired|Compute time quota|waking up/i.test(msg);
+}
+
+function postgresDriver(rawConnectionString: string, envVar = "DATABASE_URL"): Driver {
+  type ClientLike = {
+    query: (text: string, values?: unknown[]) => Promise<{ rows: { doc: DbDoc }[] }>;
+    release: (destroy?: boolean) => void;
+  };
   type PoolLike = {
     query: (text: string, values?: unknown[]) => Promise<{ rows: { doc: DbDoc }[] }>;
+    connect: () => Promise<ClientLike>;
   };
+
+  const config = normaliseDatabaseConfig(rawConnectionString);
   let poolPromise: Promise<PoolLike> | null = null;
 
-  /** Never log the password that may be inside the connection string. */
-  function safeLocation(): string {
-    try {
-      const url = new URL(connectionString);
-      return `${url.hostname}${url.pathname}`;
-    } catch {
-      return "the configured database";
-    }
-  }
-
   async function pool(): Promise<PoolLike> {
+    if (!config.valid) {
+      throw new StorageError(
+        `The ${envVar} environment variable is not a valid Postgres connection string (it should start with postgresql://).`,
+        { detail: `Invalid ${envVar}` },
+      );
+    }
     if (!poolPromise) {
       poolPromise = (async () => {
         const mod = (await import("pg")) as unknown as {
-          Pool: new (config: { connectionString: string; max: number; connectionTimeoutMillis: number }) => PoolLike;
+          Pool?: new (opts: Record<string, unknown>) => PoolLike;
+          default?: { Pool: new (opts: Record<string, unknown>) => PoolLike };
         };
-        const pgPool = new mod.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000 });
-        await pgPool.query(
-          `create table if not exists brainykids_state (
-             id integer primary key,
-             doc jsonb not null,
-             updated_at timestamptz not null default now()
-           )`,
-        );
+        const PoolCtor = mod.Pool ?? mod.default?.Pool;
+        if (!PoolCtor) throw new Error("pg.Pool unavailable");
+
+        const pgPool = new PoolCtor({
+          connectionString: config.connectionString,
+          enableChannelBinding: config.enableChannelBinding,
+          // Keep pool small per serverless instance and allow 15s for Neon scale-to-zero wake-up.
+          max: 3,
+          idleTimeoutMillis: 10_000,
+          connectionTimeoutMillis: 15_000,
+        });
+
+        try {
+          await pgPool.query(
+            `create table if not exists brainykids_state (
+               id integer primary key,
+               doc jsonb not null,
+               updated_at timestamptz not null default now()
+             )`,
+          );
+        } catch (err) {
+          const code = (err as { code?: string } | undefined)?.code;
+          // Ignore concurrent `CREATE TABLE IF NOT EXISTS` race across cold lambdas.
+          if (code !== "23505" && code !== "42P07") throw err;
+        }
         return pgPool;
       })().catch((error) => {
         // Let the next request try again instead of caching a dead pool.
         poolPromise = null;
-        throw new StorageError(DB_UNREACHABLE, { detail: `Database ${safeLocation()} unreachable`, cause: error });
+        if (error instanceof StorageError) throw error;
+        throw new StorageError(describeDatabaseError(error, envVar, config.safeLocation), {
+          detail: `Database ${config.safeLocation} unreachable`,
+          cause: error,
+        });
       });
     }
     return poolPromise;
+  }
+
+  async function withRetry<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (firstError) {
+      if (firstError instanceof StorageError && !isTransientDbError(firstError.cause)) {
+        throw firstError;
+      }
+      if (!isTransientDbError(firstError) && !(firstError instanceof StorageError)) {
+        throw firstError;
+      }
+      // Reset the pool and wait briefly in case Neon compute just woke from suspend.
+      poolPromise = null;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      return await operation();
+    }
   }
 
   return {
@@ -412,27 +632,90 @@ function postgresDriver(connectionString: string): Driver {
     cacheTtl: 400,
     async load() {
       try {
-        const db = await pool();
-        const result = await db.query("select doc from brainykids_state where id = 1");
-        return result.rows[0]?.doc ? normaliseDoc(result.rows[0].doc) : null;
+        return await withRetry(async () => {
+          const db = await pool();
+          const result = await db.query("select doc from brainykids_state where id = 1");
+          return result.rows[0]?.doc ? normaliseDoc(result.rows[0].doc) : null;
+        });
       } catch (error) {
-        throw error instanceof StorageError ? error : new StorageError(DB_UNREACHABLE, { detail: "Could not read the database", cause: error });
+        throw error instanceof StorageError
+          ? error
+          : new StorageError(describeDatabaseError(error, envVar, config.safeLocation), {
+              detail: "Could not read the database",
+              cause: error,
+            });
       }
     },
     async save(doc) {
       try {
-        const db = await pool();
-        await db.query(
-          `insert into brainykids_state (id, doc, updated_at) values (1, $1, now())
-           on conflict (id) do update set doc = excluded.doc, updated_at = now()`,
-          [JSON.stringify(doc)],
-        );
+        await withRetry(async () => {
+          const db = await pool();
+          await db.query(
+            `insert into brainykids_state (id, doc, updated_at) values (1, $1::jsonb, now())
+             on conflict (id) do update set doc = excluded.doc, updated_at = now()`,
+            [JSON.stringify(doc)],
+          );
+        });
       } catch (error) {
-        throw error instanceof StorageError ? error : new StorageError(DB_UNREACHABLE, { detail: "Could not write the database", cause: error });
+        throw error instanceof StorageError
+          ? error
+          : new StorageError(describeDatabaseError(error, envVar, config.safeLocation), {
+              detail: "Could not write the database",
+              cause: error,
+            });
+      }
+    },
+    async transact<T>(fn: (doc: DbDoc) => T | Promise<T>): Promise<{ doc: DbDoc; result: T }> {
+      try {
+        return await withRetry(async () => {
+          const db = await pool();
+          const client = await db.connect();
+          let broken = false;
+          try {
+            await client.query("begin");
+            await client.query(
+              `insert into brainykids_state (id, doc, updated_at) values (1, $1::jsonb, now())
+               on conflict (id) do nothing`,
+              [JSON.stringify(emptyDoc())],
+            );
+            const locked = await client.query("select doc from brainykids_state where id = 1 for update");
+            const current = normaliseDoc(locked.rows[0]?.doc ?? emptyDoc());
+            const result = await fn(current);
+            await client.query("update brainykids_state set doc = $1::jsonb, updated_at = now() where id = 1", [
+              JSON.stringify(current),
+            ]);
+            await client.query("commit");
+            return { doc: current, result };
+          } catch (txError) {
+            broken = isTransientDbError(txError);
+            try {
+              await client.query("rollback");
+            } catch {
+              broken = true;
+            }
+            throw txError;
+          } finally {
+            client.release(broken);
+          }
+        });
+      } catch (error) {
+        throw error instanceof StorageError
+          ? error
+          : new StorageError(describeDatabaseError(error, envVar, config.safeLocation), {
+              detail: "Could not update the database",
+              cause: error,
+            });
       }
     },
     info() {
-      return { driver: "postgres", durable: true, location: safeLocation(), notice: null };
+      return {
+        driver: "postgres",
+        durable: true,
+        location: config.safeLocation,
+        notice: null,
+        envVar,
+        ephemeralHost: false,
+      };
     },
   };
 }
@@ -441,7 +724,7 @@ function postgresDriver(connectionString: string): Driver {
 // Store
 // ---------------------------------------------------------------------------
 
-type StoreGlobal = { __brainyKidsStore?: Store };
+type StoreGlobal = { __brainyKidsStore?: Store; __brainyKidsStoreKey?: string };
 
 class Store {
   private cache: DbDoc | null = null;
@@ -469,11 +752,16 @@ class Store {
     return this.cache;
   }
 
-  /** Read, change and persist the document. Serialised per process. */
+  /** Read, change and persist the document. Serialised per process and locked in Postgres. */
   async mutate<T>(fn: (doc: DbDoc) => T | Promise<T>): Promise<T> {
     const run = this.queue.then(async () => {
-      // Mutations always start from a fresh copy so parallel writers (other
-      // server instances) cannot be silently overwritten by a stale cache.
+      if (this.driver.transact) {
+        const { doc, result } = await this.driver.transact(fn);
+        this.cache = doc;
+        this.cacheAt = Date.now();
+        return result;
+      }
+      // File driver: start from a fresh copy on disk, apply changes, and save.
       const fresh = normaliseDoc((await this.driver.load()) ?? emptyDoc());
       const result = await fn(fresh);
       await this.driver.save(fresh);
@@ -491,9 +779,13 @@ class Store {
 
 export function getStore(): Store {
   const g = globalThis as unknown as StoreGlobal;
-  if (!g.__brainyKidsStore) {
-    const url = process.env.DATABASE_URL;
-    g.__brainyKidsStore = new Store(url ? postgresDriver(url) : fileDriver());
+  const resolved = resolveDatabaseEnv();
+  const key = resolved ? `pg:${resolved.envVar}:${resolved.rawUrl}` : `file:${process.env.BRAINYKIDS_DATA_DIR ?? ""}`;
+  if (!g.__brainyKidsStore || g.__brainyKidsStoreKey !== key) {
+    g.__brainyKidsStore = new Store(
+      resolved ? postgresDriver(resolved.rawUrl, resolved.envVar) : fileDriver(),
+    );
+    g.__brainyKidsStoreKey = key;
   }
   return g.__brainyKidsStore;
 }
@@ -504,6 +796,59 @@ export const store = {
   driverName: () => getStore().driverName,
   info: () => getStore().info(),
 };
+
+/**
+ * Actively checks whether the current storage backend can read and write.
+ * Used by GET /api/storage so a parent on Vercel can click "Check database connection"
+ * right after attaching Neon.
+ */
+export async function checkStorageHealth(): Promise<{
+  ok: boolean;
+  storage: StorageInfo;
+  message: string;
+  checkedAt: number;
+}> {
+  const current = getStore();
+  const info = current.info();
+  try {
+    await current.read();
+    if (info.driver === "postgres") {
+      return {
+        ok: true,
+        storage: info,
+        message: `Connected to Postgres (${info.location} via ${info.envVar ?? "DATABASE_URL"}). Accounts and progress are saved permanently.`,
+        checkedAt: Date.now(),
+      };
+    }
+    if (info.durable) {
+      return {
+        ok: true,
+        storage: info,
+        message: `Saving to local folder (${info.location}).`,
+        checkedAt: Date.now(),
+      };
+    }
+    return {
+      ok: true,
+      storage: info,
+      message:
+        "No Postgres database environment variable (DATABASE_URL, POSTGRES_URL, or NEON_DATABASE_URL) was found in this deployment yet. " +
+        "After connecting Neon in Vercel Storage or adding DATABASE_URL in Vercel Settings, trigger a Redeploy so Vercel applies the variable.",
+      checkedAt: Date.now(),
+    };
+  } catch (cause) {
+    const message =
+      cause instanceof StorageError
+        ? cause.userMessage
+        : "BrainyKids could not reach its storage. Check your database settings and try again.";
+    return {
+      ok: false,
+      storage: { ...info, durable: false, notice: message },
+      message,
+      checkedAt: Date.now(),
+    };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Event helpers

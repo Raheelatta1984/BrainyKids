@@ -167,7 +167,7 @@ against the stored COSE public key. Attestation certificate chains are not
 validated. Everything in that module is covered by `npm run selftest`, which
 plays the part of an authenticator with Node's own crypto (no browser needed).
 
-## Deploy on Vercel
+## Deploy on Vercel (with Neon Serverless Postgres)
 
 Import this repository with these project settings:
 
@@ -175,7 +175,27 @@ Import this repository with these project settings:
 - **Root Directory:** the repository root (leave the field empty/default)
 - **Build Command:** `npm run build` (the Next.js default)
 - **Output Directory:** leave at the Next.js default; do not set it to `out`
-- **Environment variables:** set `DATABASE_URL` to a Postgres connection string
+
+### Attaching a Neon database on Vercel
+
+Because Vercel's serverless filesystem is read-only and ephemeral, attach a
+**Neon (Serverless Postgres)** database so parent accounts, children, passkeys
+and quiz progress are saved permanently across every serverless instance:
+
+1. **Option A — Attach Neon inside Vercel (recommended):**
+   In your Vercel project open the **Storage** tab → **Create Database** →
+   choose **Neon (Serverless Postgres)** → click **Connect**. Vercel injects
+   `DATABASE_URL` / `POSTGRES_URL` automatically.
+2. **Option B — Use an existing Neon project:**
+   In the [Neon Console](https://console.neon.tech) copy your connection string
+   (`postgresql://…@ep-….neon.tech/neondb?sslmode=require`), then in Vercel go
+   to **Settings → Environment Variables** and add it as `DATABASE_URL`
+   (BrainyKids also automatically detects `POSTGRES_URL`, `NEON_DATABASE_URL`,
+   `POSTGRES_PRISMA_URL`, `DATABASE_URL_UNPOOLED` and `POSTGRES_URL_NON_POOLING`).
+3. **Redeploy** the latest deployment in Vercel (**Deployments → ⋯ → Redeploy**)
+   so the environment variable is active, or click **Check database connection**
+   in the storage banner on the sign-in screen. BrainyKids creates its
+   `brainykids_state` table automatically on first connect.
 
 Commit the source files and deploy the branch containing them. If Vercel's
 production branch is `main`, merge the changes into `main` before deploying.

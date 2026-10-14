@@ -4,6 +4,7 @@ import { useState } from "react";
 import ParentAuth, { type ParentAuthMode } from "@/components/ParentAuth";
 import ForgotPassword from "@/components/ForgotPassword";
 import KidDeviceLink from "@/components/KidDeviceLink";
+import StorageBanner from "@/components/StorageBanner";
 
 type View = "choose" | "parent" | "kid" | "recovery";
 
@@ -35,7 +36,7 @@ export default function AuthGateway({
 
       <section className="card gateway-card">
         {notice && <p className="banner info">{notice}</p>}
-        {storageNotice && <p className="banner warn">💾 {storageNotice}</p>}
+        <StorageBanner notice={storageNotice} onChecked={onDone} />
 
         {view === "choose" && (
           <>

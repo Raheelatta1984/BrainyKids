@@ -1,8 +1,8 @@
 import type { NextRequest } from "next/server";
-import { hashSecret, verifySecret } from "@/lib/server/auth";
+import { COOKIES, hashSecret, verifySecret } from "@/lib/server/auth";
 import { error, json, readBody, route, str } from "@/lib/server/http";
 import { formatRecoveryCode, isValidPassword, newRecoveryCode, PASSWORD_MIN_LENGTH } from "@/lib/server/recovery";
-import { parentAuth } from "@/lib/server/session";
+import { parentAuth, setParentSessionCookies } from "@/lib/server/session";
 import { store } from "@/lib/server/store";
 
 export const runtime = "nodejs";
@@ -41,5 +41,8 @@ export const POST = route(async (req: NextRequest) => {
   });
 
   if (!updated) return error("That account no longer exists.", 404);
-  return json({ ok: true, recoveryCode: formatRecoveryCode(recoveryCode) });
+  const res = json({ ok: true, recoveryCode: formatRecoveryCode(recoveryCode) });
+  const rawToken = req.cookies.get(COOKIES.parent)?.value;
+  if (rawToken) setParentSessionCookies(res, rawToken, updated, auth.session);
+  return res;
 });

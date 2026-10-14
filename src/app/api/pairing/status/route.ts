@@ -11,16 +11,17 @@ export const dynamic = "force-dynamic";
 
 /**
  * Polled by the kid device while it waits for a parent to approve the link.
- * Pass `wait=1` for a long poll so the sign-in happens the moment a parent taps
- * Approve, without hammering the server.
+ * Pass `wait=1` for a short long-poll (capped at 8 seconds so serverless hosts
+ * like Vercel Hobby never time out the function) so the sign-in happens the
+ * moment a parent taps Approve, without hammering the server.
  */
 export const GET = route(async (req: NextRequest) => {
   const wait = new URL(req.url).searchParams.get("wait") === "1";
-  const deadline = Date.now() + (wait ? 20_000 : 0);
+  const deadline = Date.now() + (wait ? 8_000 : 0);
 
   let check = await checkPairing(req);
   while (check.status === "pending" && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    await new Promise((resolve) => setTimeout(resolve, 800));
     check = await checkPairing(req);
   }
 

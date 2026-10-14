@@ -9,7 +9,7 @@
  *
  *     npm run reset-password -- parent@example.com "new password"
  *
- * Works with the JSON file store and with DATABASE_URL (Postgres).
+ * Works with the JSON file store and with DATABASE_URL / POSTGRES_URL / NEON_DATABASE_URL (Postgres / Neon).
  */
 
 import crypto from "node:crypto";
@@ -29,15 +29,37 @@ function usage(message) {
   process.exit(1);
 }
 
+function normaliseConnectionString(rawInput) {
+  let cleaned = rawInput.trim().replace(/^[A-Z0-9_]+=\s*/i, "");
+  if (/^psql\s+/i.test(cleaned)) {
+    cleaned = cleaned.replace(/^psql\s+(?:-[a-zA-Z]\s+)*\s*/i, "").trim();
+  }
+  if ((cleaned.startsWith("'") && cleaned.endsWith("'")) || (cleaned.startsWith('"') && cleaned.endsWith('"'))) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  const parsed = new URL(cleaned);
+  const channelBinding = parsed.searchParams.get("channel_binding")?.toLowerCase();
+  const enableChannelBinding = channelBinding === "require" || channelBinding === "prefer";
+  const sslmode = parsed.searchParams.get("sslmode")?.toLowerCase();
+  if (
+    (sslmode === "require" || sslmode === "prefer" || sslmode === "verify-ca") &&
+    !parsed.searchParams.has("uselibpqcompat")
+  ) {
+    parsed.searchParams.set("uselibpqcompat", "true");
+  }
+  return { connectionString: parsed.toString(), enableChannelBinding };
+}
+
 async function loadFileDoc(dir) {
   const file = path.join(dir, "brainykids.json");
   const raw = await fs.readFile(file, "utf8");
   return { doc: JSON.parse(raw), save: async (next) => fs.writeFile(file, JSON.stringify(next, null, 2), "utf8"), where: file };
 }
 
-async function loadPostgresDoc(connectionString) {
+async function loadPostgresDoc(rawConnectionString) {
   const { Pool } = await import("pg");
-  const pool = new Pool({ connectionString, max: 1, connectionTimeoutMillis: 5_000 });
+  const { connectionString, enableChannelBinding } = normaliseConnectionString(rawConnectionString);
+  const pool = new Pool({ connectionString, enableChannelBinding, max: 1, connectionTimeoutMillis: 15_000 });
   const { rows } = await pool.query("select doc from brainykids_state where id = 1");
   if (!rows[0]?.doc) throw new Error("No BrainyKids data was found in the database yet.");
   return {
@@ -55,9 +77,16 @@ if (!email || !password) usage();
 if (password.length < 8) usage("Use a password with at least 8 characters.");
 
 const normalisedEmail = email.trim().toLowerCase();
+const dbUrl =
+  process.env.DATABASE_URL ||
+  process.env.POSTGRES_URL ||
+  process.env.NEON_DATABASE_URL ||
+  process.env.POSTGRES_PRISMA_URL ||
+  process.env.DATABASE_URL_UNPOOLED ||
+  process.env.POSTGRES_URL_NON_POOLING;
 
-const source = process.env.DATABASE_URL
-  ? await loadPostgresDoc(process.env.DATABASE_URL)
+const source = dbUrl
+  ? await loadPostgresDoc(dbUrl)
   : await loadFileDoc(process.env.BRAINYKIDS_DATA_DIR ?? path.join(process.cwd(), ".data"));
 
 const parent = (source.doc.parents ?? []).find((p) => p.email === normalisedEmail);

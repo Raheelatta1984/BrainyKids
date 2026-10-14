@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { KidView, LiveEvent, ParentAccount, Snapshot } from "@/lib/types";
+import type { KidView, LiveEvent, ParentAccount, Snapshot, StorageState } from "@/lib/types";
 
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -66,6 +66,13 @@ export type AnswerResult = {
 
 export type PasskeyStatus = { parent: number; kid: number; hasAny: boolean };
 
+export type StorageHealth = {
+  ok: boolean;
+  storage: StorageState;
+  message: string;
+  checkedAt: number;
+};
+
 export const actions = {
   parentSignup: (input: { name: string; email: string; password: string }) =>
     api.post<{ parent: ParentAccount; recoveryCode: string }>("/api/auth/signup", input),
@@ -81,6 +88,7 @@ export const actions = {
 
   passkeyStatus: () => api.get<PasskeyStatus>("/api/auth/passkey/status"),
   passkeyRemove: (id: string) => api.del<{ ok: true }>(`/api/auth/passkey/${id}`),
+  storageStatus: () => api.get<StorageHealth>("/api/storage"),
 
   createKid: (input: {
     name: string;
@@ -163,12 +171,23 @@ export function useLive(): Live {
   }, [refresh]);
 
   const role = snapshot?.role ?? null;
+  const durable = snapshot?.storage?.durable ?? true;
 
   useEffect(() => {
     if (!role || role === "guest") {
       streamRef.current?.close();
       streamRef.current = null;
       return;
+    }
+
+    // In temporary serverless storage (/tmp without a Postgres database), avoid
+    // holding a serverless function open with SSE so all requests share the warm
+    // instance; fast polling below keeps the screen fresh.
+    if (!durable) {
+      streamRef.current?.close();
+      streamRef.current = null;
+      const id = setTimeout(() => setConnected(true), 0);
+      return () => clearTimeout(id);
     }
 
     let closed = false;
@@ -231,15 +250,15 @@ export function useLive(): Live {
       streamRef.current = null;
       setConnected(false);
     };
-  }, [role, refresh, scheduleRefresh]);
+  }, [role, durable, refresh, scheduleRefresh]);
 
-  // Safety net: quick polls when the stream is down, slow polls otherwise.
+  // Safety net: quick polls when the stream is down or in temporary storage, slow polls otherwise.
   useEffect(() => {
     if (!role || role === "guest") return;
-    const period = connected ? 15_000 : 4_000;
+    const period = connected && durable ? 15_000 : 4_000;
     const id = setInterval(() => void refresh(), period);
     return () => clearInterval(id);
-  }, [connected, role, refresh]);
+  }, [connected, durable, role, refresh]);
 
   return { snapshot, loading, connected, events, notice, setNotice, refresh, setSnapshot };
 }
