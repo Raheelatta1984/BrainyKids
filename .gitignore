@@ -1,0 +1,20 @@
+# Installed dependencies and generated build files
+/node_modules/
+/.next/
+/out/
+/build/
+*.tsbuildinfo
+
+# Local environment files (keep secrets out of Git)
+.env*
+!.env.example
+
+# Local deployment state and logs
+/.vercel/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
