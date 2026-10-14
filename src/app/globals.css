@@ -59,3 +59,65 @@ h1 {
   font-size: 0.875rem;
   line-height: 1.5;
 }
+
+/* BrainyKids quiz app */
+.kid-shell, .parent-shell {
+  min-height: 100svh;
+  padding: 16px;
+  display: grid;
+  gap: 16px;
+  align-content: start;
+  justify-items: center;
+}
+.kid-shell { --accent: #5b6cff; --bg: #eef1ff; background: var(--bg); }
+.kid-shell.theme-space { --accent: #3b2fa0; --bg: #e8e4ff; }
+.kid-shell.theme-jungle { --accent: #2e8b57; --bg: #e6f7ea; }
+.kid-shell.theme-robots { --accent: #0b7285; --bg: #e0f6fa; }
+.kid-shell.theme-dinos { --accent: #d9480f; --bg: #fff1e6; }
+.parent-shell { --accent: #3b5bdb; background: #f3f5fc; }
+.card { background: #fff; border-radius: 20px; padding: 20px; width: 100%; max-width: 720px; box-shadow: 0 8px 24px rgba(30, 37, 66, 0.12); }
+.card.center { text-align: center; }
+.kid-header { width: 100%; max-width: 720px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; font-weight: 700; }
+.muted { color: #5c6685; }
+.error { color: #c92a2a; font-weight: 700; }
+.profile-grid, .level-grid, .choices { display: grid; gap: 12px; }
+.profile-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+.level-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.choices { grid-template-columns: 1fr 1fr; margin-top: 12px; }
+.profile, .level, .choice {
+  font: inherit; cursor: pointer; border: 2px solid transparent; border-radius: 16px; padding: 14px;
+  background: var(--bg, #eef1ff); color: #1e2542; text-align: left; display: grid; gap: 4px;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+.profile:hover, .level:hover, .choice:hover:not(:disabled) { transform: translateY(-2px); border-color: var(--accent, #5b6cff); }
+.profile-emoji { font-size: 40px; text-align: center; }
+.level:disabled { opacity: 0.55; cursor: not-allowed; }
+.choice.correct { background: #d3f9d8; border-color: #2b8a3e; animation: bounce 0.6s ease; }
+.choice.wrong { background: #ffe3e3; border-color: #c92a2a; animation: shake 0.4s ease; }
+.visual { font-size: 64px; text-align: center; margin: 8px 0; }
+.visual.pop { animation: bounce 0.6s ease; }
+.visual.shake { animation: shake 0.4s ease; }
+.question { font-size: 22px; }
+kbd { background: #1e2542; color: #fff; border-radius: 6px; padding: 2px 6px; margin-right: 6px; }
+.typed { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.typed input, .add-kid input, .add-kid select, .card > form input { font: inherit; padding: 10px; border-radius: 12px; border: 2px solid #c5cbe0; flex: 1; min-width: 120px; }
+.feedback { margin-top: 16px; padding: 16px; border-radius: 16px; }
+.feedback.good { background: #ebfbee; }
+.feedback.bad { background: #fff5f5; }
+.quiz-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.request, .approve { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+button.primary { background: var(--accent, #3b5bdb); color: #fff; border: 0; border-radius: 14px; padding: 12px 18px; font: inherit; font-weight: 700; cursor: pointer; }
+button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+button.link { background: none; border: 0; color: var(--accent, #3b5bdb); font: inherit; font-weight: 700; cursor: pointer; padding: 4px; }
+.typed button, .card > form button { font: inherit; padding: 10px 14px; border-radius: 12px; border: 0; background: #1e2542; color: #fff; cursor: pointer; }
+.parent-header { width: 100%; max-width: 720px; display: flex; justify-content: space-between; align-items: center; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; margin: 12px 0; }
+.stats div { background: #f3f5fc; border-radius: 12px; padding: 10px; }
+.stats dt { font-size: 13px; color: #5c6685; }
+.stats dd { margin: 4px 0 0; font-size: 20px; font-weight: 700; }
+.add-kid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; align-items: end; }
+.add-kid label { display: grid; gap: 4px; font-weight: 700; }
+.add-kid button { grid-column: 1 / -1; }
+@keyframes bounce { 0%, 100% { transform: scale(1); } 40% { transform: scale(1.12); } 70% { transform: scale(0.97); } }
+@keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
+@media (max-width: 520px) { .choices { grid-template-columns: 1fr; } }

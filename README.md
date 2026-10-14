@@ -2,8 +2,22 @@
 
 BrainyKids Challenge Mode, built with Next.js and the App Router.
 
-This repository currently includes a minimal landing page. Add the challenge
-application under `src/app` as it is developed.
+BrainyKids Challenge Mode is a quiz app for kids with a parent dashboard.
+
+- **Kids (`/`):** choose a child profile, choose a level (1–3), and answer
+  questions by clicking a choice, typing, or speaking. Each question and answer
+  can be read aloud. Correct answers earn 1 point each, and points can be
+  requested as screen time (1 point = 1 minute).
+- **Parents (`/parent`):** create a PIN, add child profiles (name, age, gender,
+  theme), see progress for each child, and approve requested screen time.
+- **Question rules:** children aged 4 and under get early questions. Older
+  children get a mix of selective-style and NAPLAN-style questions. A question
+  is never repeated within the same level for the same child.
+- **Data storage:** progress is stored in the browser's local storage on the
+  device used. It is not yet synced between devices or secured with accounts.
+
+The questions in `src/lib/quiz-data.ts` are original practice questions written in
+selective and NAPLAN-style formats. They are not copies of official tests.
 
 ## Local development
 
