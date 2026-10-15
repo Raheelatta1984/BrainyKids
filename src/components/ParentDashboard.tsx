@@ -6,7 +6,7 @@ import { reportBehaviour } from "@/lib/client/diagnostics";
 import { useToasts, type ToastItem } from "@/lib/client/useToasts";
 import { Leaderboard, THEMES } from "@/components/KidApp";
 import { formatReward } from "@/lib/rewards";
-import { levelTitle } from "@/lib/quiz-logic";
+import { MAX_LEVEL, levelTitle, unfinishedLevels } from "@/lib/quiz-logic";
 import BehaviourLogCard from "@/components/BehaviourLogCard";
 import ChatPanel from "@/components/ChatPanel";
 import FamilySettingsCard from "@/components/FamilySettingsCard";
@@ -136,7 +136,10 @@ export default function ParentDashboard({
       {leaderboard.length > 0 && (
         <section className="card">
           <Leaderboard entries={leaderboard} settings={settings} />
-          <p className="muted small">Ranked by level first — finishing a level always unlocks the next one, so levels keep growing (Level 8 and beyond).</p>
+          <p className="muted small">
+            Ranked by best level first. Levels never end and none of them are locked: a child can play any level, in any
+            order, and go back to an unfinished one whenever they like.
+          </p>
         </section>
       )}
 
@@ -521,8 +524,11 @@ function KidCard({
   const [cheer, setCheer] = useState("");
   const [bonus, setBonus] = useState(15);
   const [showChat, setShowChat] = useState(false);
+  const [levelDraft, setLevelDraft] = useState(kid.level);
   const theme = THEMES[kid.theme];
   const accuracy = kid.attempted === 0 ? 0 : Math.round((kid.correct / kid.attempted) * 100);
+  // Levels a child has started and not finished: any of them can be carried on.
+  const unfinished = unfinishedLevels(kid);
 
   async function run<T>(fn: () => Promise<{ ok: true; data: T } | { ok: false; error: string }>) {
     setBusy(true);
@@ -589,13 +595,13 @@ function KidCard({
 
       <dl className="stats">
         <div>
-          <dt>Level</dt>
+          <dt>Playing now</dt>
           <dd>
-            {kid.level} · {levelTitle(kid.level)}
+            Level {kid.level} · {levelTitle(kid.level)}
           </dd>
         </div>
         <div>
-          <dt>Unlocked</dt>
+          <dt>Best level</dt>
           <dd>
             Level {kid.unlockedLevel} · {levelTitle(kid.unlockedLevel)}
           </dd>
@@ -635,6 +641,50 @@ function KidCard({
           <dd>{kid.approvedMinutes}</dd>
         </div>
       </dl>
+
+      <div className="levels-admin">
+        <h3>Levels</h3>
+        <p className="muted small">
+          No level is locked. {kid.name} can carry on an unfinished level, jump to any level, or start one again —
+          points, screen time and money are always kept.
+        </p>
+        {unfinished.length > 0 && (
+          <p className="muted small">
+            Not finished yet:{" "}
+            {unfinished
+              .slice(0, 4)
+              .map((entry) => `Level ${entry.level} (${entry.done} of ${entry.total})`)
+              .join(" · ")}
+          </p>
+        )}
+        <div className="row wrap gap">
+          <label className="inline">
+            Level
+            <input
+              type="number"
+              min={1}
+              max={MAX_LEVEL}
+              value={levelDraft}
+              onChange={(event) => setLevelDraft(Number(event.target.value))}
+              style={{ width: "5rem" }}
+            />
+          </label>
+          <button
+            className="ghost"
+            disabled={busy}
+            onClick={() => void run(() => actions.updateKid(kid.id, { level: levelDraft }))}
+          >
+            Open Level {levelDraft} (carry on)
+          </button>
+          <button
+            className="ghost"
+            disabled={busy}
+            onClick={() => void run(() => actions.updateKid(kid.id, { restartLevel: levelDraft }))}
+          >
+            Start Level {levelDraft} again
+          </button>
+        </div>
+      </div>
 
       <div className="approve">
         <span>

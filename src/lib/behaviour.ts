@@ -281,7 +281,26 @@ export const BEHAVIOUR: Record<string, BehaviourTemplate> = {
     severity: "warning",
     layman: "An answer was not accepted by the server, so no points were given.",
     technical: "POST /api/kid-session/answers refused: questionId={questionId} level={level} kidId={kidId} reason={reason}",
-    fix: "A locked level or an unknown question. Refresh the child's screen if it keeps happening.",
+    fix:
+      "A question that does not belong to that level, or one already answered there. No level is locked, so the child can open any level again — refresh the child's screen if it keeps happening.",
+  },
+  "quiz.level_open_failed": {
+    area: "quiz",
+    severity: "warning",
+    layman: "{kidName}'s device could not open a level, so the child stayed on the level list.",
+    technical: "POST /api/kid-session/level refused on the kid device: kidId={kidId} level={level} action={action} reason={reason}",
+    fix:
+      "No level is locked, so this is a connection or session problem rather than a rule. Refresh the child's screen; if it keeps happening, check that the device is still linked.",
+  },
+  "quiz.level_restarted": {
+    area: "quiz",
+    severity: "info",
+    layman:
+      "{kidName} started level {level} again from the first question ({cleared} of {total} answers cleared). Points, screen time and money were kept.",
+    technical:
+      "level restarted: kidId={kidId} level={level} cleared={cleared} total={total} wasComplete={wasComplete} kidLevel={kidLevel}",
+    fix:
+      "Nothing to do — levels are never locked, so a child may play a level again. If a restart was not wanted, a parent can open any level for the child from the dashboard, keeping the answers already given.",
   },
   "quiz.screen_time_requested": {
     area: "quiz",

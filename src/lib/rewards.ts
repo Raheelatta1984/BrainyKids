@@ -11,39 +11,266 @@ import type { FamilySettings } from "./types";
 export type RewardKind = "money" | "robux";
 export type Difficulty = "easy" | "medium" | "hard";
 
-export type CurrencyInfo = { code: string; label: string; symbol: string };
+export type CurrencyInfo = {
+  code: string;
+  label: string;
+  symbol: string;
+  /** Digits after the decimal point in this currency (JPY has 0, KWD has 3, most have 2). */
+  decimals: number;
+};
 
-/** Local currencies a parent can pick in Master settings. */
-export const CURRENCIES: CurrencyInfo[] = [
-  { code: "AUD", label: "Australian dollar", symbol: "A$" },
-  { code: "NZD", label: "New Zealand dollar", symbol: "NZ$" },
-  { code: "USD", label: "US dollar", symbol: "US$" },
-  { code: "GBP", label: "British pound", symbol: "£" },
-  { code: "EUR", label: "Euro", symbol: "€" },
-  { code: "CAD", label: "Canadian dollar", symbol: "C$" },
-  { code: "SGD", label: "Singapore dollar", symbol: "S$" },
-  { code: "AED", label: "UAE dirham", symbol: "د.إ" },
-  { code: "INR", label: "Indian rupee", symbol: "₹" },
-  { code: "PKR", label: "Pakistani rupee", symbol: "₨" },
+/**
+ * Currencies a parent can pick: the ones families ask for first, then every
+ * other currency in the world.
+ *
+ * The full list comes from the runtime's own ISO 4217 catalogue
+ * (`Intl.supportedValuesOf("currency")`), with a static fallback for older
+ * browsers, so “all other currency in the world” keeps up with the standard
+ * instead of a hand-written list going stale.
+ *
+ * Cryptocurrency is deliberately never offered. BrainyKids pays children in
+ * money a family can actually hand over, or in Robux — not in a coin whose
+ * price moves by the minute — so a crypto code is refused even if it is typed
+ * straight into the API.
+ */
+const COMMON_CODES = [
+  "AUD",
+  "NZD",
+  "USD",
+  "CAD",
+  "GBP",
+  "EUR",
+  "CHF",
+  "JPY",
+  "CNY",
+  "HKD",
+  "SGD",
+  "INR",
+  "PKR",
+  "BDT",
+  "LKR",
+  "NPR",
+  "AED",
+  "SAR",
+  "QAR",
+  "KWD",
+  "BHD",
+  "OMR",
+  "ZAR",
+  "NGN",
+  "KES",
+  "EGP",
+  "TRY",
+  "BRL",
+  "MXN",
+  "SEK",
+  "NOK",
+  "DKK",
+  "PLN",
+  "CZK",
+  "ILS",
+  "KRW",
+  "THB",
+  "MYR",
+  "IDR",
+  "PHP",
+  "VND",
+  "TWD",
 ];
 
+/** ISO 4217 codes that are units of account, not money a child can hold. */
+const NOT_MONEY_CODES = new Set([
+  "XAU",
+  "XAG",
+  "XPT",
+  "XPD",
+  "XBA",
+  "XBB",
+  "XBC",
+  "XBD",
+  "XDR",
+  "XSU",
+  "XTS",
+  "XUA",
+  "XXX",
+  "XFO",
+  "XFU",
+]);
+
+/**
+ * Cryptocurrencies, refused by name. The ISO catalogue above contains none of
+ * them; this list is what stops one being stored anyway (an old setting, a hand
+ * written API call), because “no crypto” has to hold on the server too.
+ */
+export const CRYPTO_CODES = new Set([
+  "BTC", "ETH", "USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USDP", "PYUSD", "USDE", "USDS", "DAI", "GUSD", "PAXG",
+  "WBTC", "WETH", "STETH", "RETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "LTC", "DOT", "TRX", "AVAX", "SHIB",
+  "MATIC", "POL", "LINK", "ATOM", "XLM", "XMR", "BCH", "ETC", "FIL", "NEAR", "APT", "ARB", "OP", "HBAR", "ALGO",
+  "VET", "ICP", "FTM", "SAND", "MANA", "AXS", "GALA", "EGLD", "THETA", "XTZ", "EOS", "AAVE", "UNI", "MKR", "CRV",
+  "SNX", "COMP", "SUSHI", "YFI", "BAT", "ENJ", "CHZ", "ZEC", "DASH", "NEO", "QTUM", "IOTA", "ONE", "ROSE", "KSM",
+  "GLMR", "CELO", "KAVA", "RUNE", "CAKE", "WAVES", "TON", "OKB", "KAS", "WIF", "BONK", "PEPE", "FLOKI", "FET",
+  "RNDR", "IMX", "STX", "INJ", "TIA", "SUI", "SEI", "BLUR", "JUP", "PYTH", "DYDX", "GRT", "LDO", "ENS", "XDC",
+  "XRD", "FLOW", "CSPR", "IOTX", "MINA", "KDA", "ASTR", "CFX", "KLAY", "MNT", "ZIL", "ICX", "ZEN", "XVG", "DGB",
+  "RVN", "NANO", "WAXP", "CRO", "NEXO",
+]);
+
+/** Written out so a browser without `Intl.supportedValuesOf` still has every currency. */
+const ISO_FALLBACK =
+  "AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN BWP BYN BZD CAD CDF CHF CLP CNY COP CRC CUC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HRK HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SLL SOS SRD SSP STN SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX USD UYU UZS VES VND VUV WST XAF XCD XCG XOF XPF YER ZAR ZMW ZWG ZWL";
+
+/** Currencies whose smallest unit is not 1/100 (the rest of the world uses cents). */
+const DECIMALS: Record<string, number> = {
+  BIF: 0, CLP: 0, DJF: 0, GNF: 0, ISK: 0, JPY: 0, KMF: 0, KRW: 0, PYG: 0, RWF: 0, UGX: 0, UYI: 0, VND: 0, VUV: 0,
+  XAF: 0, XOF: 0, XPF: 0,
+  BHD: 3, IQD: 3, JOD: 3, KWD: 3, LYD: 3, OMR: 3, TND: 3,
+  CLF: 4, UYW: 4,
+};
+
+let isoCache: string[] | null = null;
+
+function isoCodes(): string[] {
+  if (isoCache) return isoCache;
+  let codes: string[] = [];
+  try {
+    const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] })
+      .supportedValuesOf?.("currency");
+    if (supported && supported.length > 0) codes = supported;
+  } catch {
+    /* an older runtime: the static list below is the whole catalogue */
+  }
+  if (codes.length === 0) codes = ISO_FALLBACK.split(" ");
+  isoCache = [...new Set(codes.map((code) => code.toUpperCase()))]
+    .filter((code) => /^[A-Z]{3}$/.test(code) && !NOT_MONEY_CODES.has(code) && !CRYPTO_CODES.has(code))
+    .sort();
+  return isoCache;
+}
+
+function labelFor(code: string): string {
+  try {
+    const names = new Intl.DisplayNames(["en"], { type: "currency" });
+    return names.of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+function symbolFor(code: string): string {
+  try {
+    const parts = new Intl.NumberFormat("en", {
+      style: "currency",
+      currency: code,
+      currencyDisplay: "narrowSymbol",
+    }).formatToParts(0);
+    const symbol = parts.find((part) => part.type === "currency")?.value;
+    if (symbol && symbol !== code) return symbol;
+  } catch {
+    /* an unknown-to-the-runtime code falls back to the code itself */
+  }
+  return code;
+}
+
+const infoCache = new Map<string, CurrencyInfo>();
+
+/** Everything known about one currency code, ready to display. */
+export function currencyInfo(code: string): CurrencyInfo {
+  const upper = (code || "AUD").toUpperCase();
+  const cached = infoCache.get(upper);
+  if (cached) return cached;
+  const info: CurrencyInfo = {
+    code: upper,
+    label: labelFor(upper),
+    symbol: symbolFor(upper),
+    decimals: DECIMALS[upper] ?? 2,
+  };
+  infoCache.set(upper, info);
+  return info;
+}
+
+function optionsFor(codes: string[]): CurrencyInfo[] {
+  return codes.map((code) => currencyInfo(code));
+}
+
+/** The currencies families reach for most often, shown first in the picker. */
+export function commonCurrencyOptions(): CurrencyInfo[] {
+  const known = new Set(isoCodes());
+  return optionsFor(COMMON_CODES.filter((code) => known.has(code)));
+}
+
+/** Every other currency in the world (ISO 4217). Never a cryptocurrency. */
+export function otherCurrencyOptions(): CurrencyInfo[] {
+  const common = new Set(COMMON_CODES);
+  return optionsFor(isoCodes().filter((code) => !common.has(code)));
+}
+
+/** Every currency, common ones first — for validation, tests and search. */
+export function currencyOptions(): CurrencyInfo[] {
+  return [...commonCurrencyOptions(), ...otherCurrencyOptions()];
+}
+
+export function isKnownCurrency(code: string): boolean {
+  if (!/^[A-Za-z]{3}$/.test(code)) return false;
+  const upper = code.toUpperCase();
+  if (CRYPTO_CODES.has(upper) || NOT_MONEY_CODES.has(upper)) return false;
+  return isoCodes().includes(upper);
+}
+
+/** True for a cryptocurrency (or a metal/unit-of-account code) — never allowed. */
+export function isCryptoCode(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const upper = value.trim().toUpperCase();
+  return CRYPTO_CODES.has(upper) || NOT_MONEY_CODES.has(upper);
+}
+
+/** The API's gate: a real ISO currency, and never a cryptocurrency. */
 export function isCurrencyCode(value: unknown): value is string {
-  return typeof value === "string" && CURRENCIES.some((c) => c.code === value);
+  return typeof value === "string" && isKnownCurrency(value.trim());
+}
+
+/**
+ * Reading a stored setting: keep any well-formed currency code the runtime did
+ * not list, but never keep a cryptocurrency. This is the lenient half of
+ * `isCurrencyCode`, so a currency chosen on one device is not silently reset to
+ * the default by another device with an older browser.
+ */
+export function sanitiseCurrency(value: unknown, fallback = "AUD"): string {
+  if (typeof value !== "string") return fallback;
+  const code = value.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(code) || isCryptoCode(code)) return fallback;
+  return code;
 }
 
 export function isRewardKind(value: unknown): value is RewardKind {
   return value === "money" || value === "robux";
 }
 
-/** Formats a stored minor-unit amount, e.g. 50 → “A$0.50”, or 50 → “50 Robux”. */
+/** How a reward kind reads on screen: real money in the family's currency, or Robux. */
+export function rewardKindLabel(kind: RewardKind, currency: string): string {
+  return kind === "robux" ? "Robux" : currencyInfo(currency).code;
+}
+
+/**
+ * Formats a stored amount in the currency's smallest unit.
+ * 50 → “A$0.50”, 50 → “¥50” (Japan has no cents), 50 → “50 Robux”.
+ */
 export function formatReward(amountMinor: number, kind: RewardKind, currency: string): string {
   const amount = Math.max(0, Math.round(amountMinor));
   if (kind === "robux") return `${amount} Robux`;
+  const info = currencyInfo(currency);
   try {
-    return new Intl.NumberFormat("en", { style: "currency", currency }).format(amount / 100);
+    return new Intl.NumberFormat("en", {
+      style: "currency",
+      currency: info.code,
+      minimumFractionDigits: info.decimals,
+      maximumFractionDigits: info.decimals,
+    }).format(amount / 10 ** info.decimals);
   } catch {
-    return `${currency} ${(amount / 100).toFixed(2)}`;
+    return `${info.code} ${(amount / 10 ** info.decimals).toFixed(info.decimals)}`;
   }
+}
+
+/** “A$0.50” for 50 cents: one amount shown in the currency a parent just chose. */
+export function currencyExample(code: string): string {
+  return formatReward(50, "money", code);
 }
 
 /**

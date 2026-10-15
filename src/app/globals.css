@@ -497,6 +497,117 @@ button.link {
   color: var(--muted);
 }
 
+/* Every level is open: a card carries the level, and a small ↺ starts it again. */
+.level-card {
+  position: relative;
+  display: flex;
+}
+
+.level-card .level {
+  width: 100%;
+  height: 100%;
+}
+
+.level-card.current .level {
+  border-color: var(--accent, #5b6cff);
+}
+
+.level-action {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--accent, #5b6cff);
+  font-size: 0.9em;
+}
+
+.level-restart {
+  position: absolute;
+  top: 8px;
+  inset-inline-end: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgb(30 37 66 / 14%);
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgb(30 37 66 / 12%);
+}
+
+.level-restart:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.restart-ask {
+  position: absolute;
+  inset: auto 8px 8px 8px;
+  z-index: 2;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 97%);
+  box-shadow: 0 10px 30px rgb(30 37 66 / 25%);
+  font-size: 0.85em;
+}
+
+.restart-ask p {
+  margin: 0;
+}
+
+/* “Carry on where you stopped”: one tap back into the unfinished level. */
+.resume-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 2px solid var(--accent, #5b6cff);
+  background: linear-gradient(135deg, #eef1ff, #ffffff);
+}
+
+.resume-emoji {
+  font-size: 1.4rem;
+}
+
+.resume-text {
+  display: grid;
+  gap: 2px;
+  margin-inline-end: auto;
+}
+
+.resume-text small {
+  color: var(--muted);
+}
+
+.jump {
+  margin-top: 16px;
+  align-items: center;
+}
+
+.center-row {
+  justify-content: center;
+}
+
+/* Dashboard: a parent can open any level, or start one level again. */
+.levels-admin {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgb(91 108 255 / 5%);
+}
+
+.levels-admin h3,
+.levels-admin p {
+  margin: 0;
+}
+
 .bar {
   display: block;
   height: 8px;

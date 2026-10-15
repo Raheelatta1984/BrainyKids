@@ -4,7 +4,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { actions, type Live } from "@/lib/client/api";
 import { reportBehaviour } from "@/lib/client/diagnostics";
 import { useToasts, type ToastItem } from "@/lib/client/useToasts";
-import { canonicalChoiceFor, levelQuestionCount, levelTitle, matchChoice, tierForLevel, tracksForAge } from "@/lib/quiz-logic";
+import {
+  MAX_LEVEL,
+  canonicalChoiceFor,
+  levelProgress,
+  levelQuestionCount,
+  levelTitle,
+  levelToResume,
+  levelWindow,
+  matchChoice,
+  tierForLevel,
+  tracksForAge,
+} from "@/lib/quiz-logic";
 import { difficultyForQuestion, formatCountdown, formatReward, timeLimitSeconds } from "@/lib/rewards";
 import { localiseQuestion, type LocalisedQuestion } from "@/lib/quiz-i18n";
 import { t } from "@/lib/i18n";
@@ -12,7 +23,7 @@ import { isRtl } from "@/lib/settings";
 import { listenOnce, recognitionSupported, speakText, speechSupported, stopSpeaking } from "@/lib/voice";
 import { QUESTIONS, type Question } from "@/lib/quiz-data";
 import ChatPanel from "@/components/ChatPanel";
-import type { FamilySettings, KidView, LeaderboardEntry, Level, LiveEvent, Theme } from "@/lib/types";
+import type { FamilySettings, KidView, LeaderboardEntry, Level, LevelAction, LiveEvent, Theme } from "@/lib/types";
 
 export const THEMES: Record<Theme, { label: string; emoji: string }> = {
   space: { label: "Space Explorers", emoji: "🚀" },
@@ -124,7 +135,12 @@ export default function KidApp({
           </span>
         </span>
         <span className="kid-stats">
-          <span className="pill">🏅 Level {kid.unlockedLevel} · {levelTitle(kid.unlockedLevel)}</span>
+          <span className="pill">
+            🏅 {t(locale, "kid.levelName", { n: kid.level })} · {levelTitle(kid.level)}
+          </span>
+          {kid.unlockedLevel > kid.level && (
+            <span className="pill">🔓 {t(locale, "kid.bestLevel", { n: kid.unlockedLevel })}</span>
+          )}
           <span className="pill">💰 {formatReward(kid.walletBalanceMinor, settings.rewardKind, settings.currency)}</span>
           <span className="pill">⭐ {kid.points} points</span>
           <span className="pill">⏱️ {kid.approvedMinutes} min</span>
@@ -186,6 +202,11 @@ export default function KidApp({
           settings={settings}
           voiceOn={voiceOn}
           onBack={() => setLevel(null)}
+          onGoToLevel={(wanted) => {
+            // Every level is open, so “next level” is simply another level.
+            void actions.setLevel(wanted);
+            setLevel(wanted);
+          }}
           live={live}
         />
       )}
@@ -266,7 +287,8 @@ export function Leaderboard({ entries, highlightKidId, settings }: { entries: Le
               {index + 1}. {entry.name} {entry.kidId === highlightKidId ? "(you)" : ""}
             </span>
             <span>
-              Level {entry.unlockedLevel} · {entry.accuracy}% · {formatReward(entry.lifetimeEarnedMinor, settings.rewardKind, settings.currency)} earned
+              {t(settings.locale, "kid.bestLevel", { n: entry.unlockedLevel })} · {entry.accuracy}% ·{" "}
+              {formatReward(entry.lifetimeEarnedMinor, settings.rewardKind, settings.currency)} earned
             </span>
           </li>
         ))}
@@ -293,17 +315,41 @@ function LevelPicker({
   const [asked, setAsked] = useState(false);
   const [askedRealise, setAskedRealise] = useState(false);
   const [error, setError] = useState("");
-  // Levels never end. Show a window around the child's frontier (plus the next
-  // locked one) instead of an ever-growing list.
-  const frontier = Math.max(kid.unlockedLevel, kid.level);
-  const firstShown = Math.max(1, frontier - 2);
-  const levels: Level[] = Array.from({ length: frontier - firstShown + 2 }, (_, i) => firstShown + i);
+  // Which level is asking “start again?” before any answer is cleared.
+  const [restartAsk, setRestartAsk] = useState<Level | null>(null);
+  const [jump, setJump] = useState("");
+  // No level is locked. The list is a window around the child (never an
+  // ever-growing wall of buttons) plus a box that jumps to any level number.
+  const levels = levelWindow(kid);
+  const resume = levelToResume(kid);
+  const best = Math.max(1, kid.unlockedLevel);
 
-  async function choose(level: Level) {
+  /**
+   * Opens a level. `start` carries on where the child stopped in it (that is
+   * what “resume” is), `restart` begins that one level again from its first
+   * question — points and money are untouched, and no level is ever refused.
+   */
+  async function choose(level: Level, action: LevelAction = "start") {
     setBusy(true);
-    await actions.setLevel(level);
+    setError("");
+    const result = await actions.setLevel(level, action);
     setBusy(false);
+    setRestartAsk(null);
+    if (!result.ok) {
+      setError(result.error);
+      reportBehaviour("quiz.level_open_failed", { kidId: kid.id, level, action, reason: result.error });
+      return;
+    }
+    await live.refresh();
     onPick(level);
+  }
+
+  function jumpToAnyLevel(event: React.FormEvent) {
+    event.preventDefault();
+    const wanted = Number.parseInt(jump, 10);
+    if (!Number.isFinite(wanted)) return;
+    setJump("");
+    void choose(Math.min(MAX_LEVEL, Math.max(1, wanted)));
   }
 
   async function askForScreenTime() {
@@ -342,29 +388,101 @@ function LevelPicker({
     <section className="card">
       <h2>{t(locale, "kid.chooseLevel")}</h2>
       <p className="muted">{kid.age <= 4 ? t(locale, "kid.earlyNote") : t(locale, "kid.mixedNote")}</p>
+      <p className="muted small">
+        {t(locale, "kid.anyLevel")}{" "}
+        <strong>
+          {t(locale, "kid.bestLevel", { n: best })} · {levelTitle(best)}
+        </strong>
+      </p>
+
+      {/* One tap back into the level the child was in the middle of. */}
+      {resume && (
+        <div className="resume-banner">
+          <span className="resume-emoji" aria-hidden="true">
+            ▶️
+          </span>
+          <span className="resume-text">
+            <strong>{t(locale, "kid.resumeTitle")}</strong>
+            <small>
+              {t(locale, "kid.levelName", { n: resume.level })} · {levelTitle(resume.level)} ·{" "}
+              {t(locale, "kid.levelProgress", { done: resume.done, total: resume.total })}
+            </small>
+          </span>
+          <button className="primary" disabled={busy} onClick={() => void choose(resume.level)}>
+            {t(locale, "kid.resume")}
+          </button>
+        </div>
+      )}
+
       <div className="level-grid">
         {levels.map((level) => {
-          const locked = level > kid.unlockedLevel;
-          const { done, total } = levelQuestionCount(kid, level);
-          const percent = total === 0 ? 0 : Math.round((done / total) * 100);
+          const progress = levelProgress(kid, level);
+          const label =
+            progress.status === "complete"
+              ? t(locale, "kid.replay")
+              : progress.status === "in-progress"
+                ? t(locale, "kid.resume")
+                : t(locale, "kid.start");
           return (
-            <button
-              key={level}
-              className={`level ${level === kid.level ? "current" : ""}`}
-              disabled={locked || busy}
-              onClick={() => void choose(level)}
-            >
-              <strong>
-                {t(locale, "kid.levelName", { n: level })} · {levelTitle(level)}
-              </strong>
-              <small>{locked ? t(locale, "kid.levelLocked") : t(locale, "kid.levelProgress", { done, total })}</small>
-              <span className="bar">
-                <span style={{ width: `${locked ? 0 : percent}%` }} />
-              </span>
-            </button>
+            <div key={level} className={`level-card ${level === kid.level ? "current" : ""}`}>
+              <button className="level" disabled={busy} onClick={() => void choose(level)}>
+                <strong>
+                  {t(locale, "kid.levelName", { n: level })} · {levelTitle(level)}
+                </strong>
+                <small>
+                  {t(locale, "kid.levelProgress", { done: progress.done, total: progress.total })}
+                  {progress.status === "complete" ? ` · ${t(locale, "kid.finishedTag")}` : ""}
+                </small>
+                <span className="bar">
+                  <span style={{ width: `${progress.percent}%` }} />
+                </span>
+                <em className="level-action">{label}</em>
+              </button>
+              {progress.done > 0 && (
+                <button
+                  className="level-restart"
+                  disabled={busy}
+                  title={t(locale, "kid.restart")}
+                  aria-label={`${t(locale, "kid.restart")} · ${t(locale, "kid.levelName", { n: level })}`}
+                  onClick={() => setRestartAsk(level)}
+                >
+                  ↺
+                </button>
+              )}
+              {restartAsk === level && (
+                <div className="restart-ask" role="dialog">
+                  <p>{t(locale, "kid.restartAsk", { level })}</p>
+                  <div className="row wrap gap">
+                    <button className="primary" disabled={busy} onClick={() => void choose(level, "restart")}>
+                      {t(locale, "kid.restartYes")}
+                    </button>
+                    <button className="ghost" disabled={busy} onClick={() => setRestartAsk(null)}>
+                      {t(locale, "kid.restartNo")}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           );
         })}
       </div>
+
+      <form className="row wrap gap jump" onSubmit={jumpToAnyLevel}>
+        <label className="inline">
+          {t(locale, "kid.jumpTo")}
+          <input
+            type="number"
+            min={1}
+            max={MAX_LEVEL}
+            inputMode="numeric"
+            value={jump}
+            onChange={(event) => setJump(event.target.value)}
+          />
+        </label>
+        <button type="submit" className="ghost" disabled={busy}>
+          {t(locale, "kid.go")}
+        </button>
+      </form>
 
       <div className="request">
         <p>
@@ -415,6 +533,7 @@ function Quiz({
   settings,
   voiceOn,
   onBack,
+  onGoToLevel,
   live,
 }: {
   kid: KidView;
@@ -423,6 +542,8 @@ function Quiz({
   settings: FamilySettings;
   voiceOn: boolean;
   onBack: () => void;
+  /** Opens another level straight from the finished screen. */
+  onGoToLevel: (level: Level) => void;
   live: Live;
 }) {
   const usedHere = useRef<Set<string>>(new Set());
@@ -592,9 +713,14 @@ function Quiz({
         <div className="center">
           <h2>{t(locale, "kid.levelFinished")}</h2>
           <p>{t(locale, "kid.levelFinishedBody")}</p>
-          <button className="primary" onClick={onBack}>
-            {t(locale, "kid.backToLevels")}
-          </button>
+          <div className="row wrap gap center-row">
+            <button className="primary" onClick={() => onGoToLevel(level + 1)}>
+              {t(locale, "kid.nextLevel")}
+            </button>
+            <button className="ghost" onClick={onBack}>
+              {t(locale, "kid.backToLevels")}
+            </button>
+          </div>
         </div>
       ) : (
         <>
@@ -686,9 +812,14 @@ function Quiz({
                   <p className="banner good">
                     {t(locale, "kid.levelUnlockNote")} {t(locale, "kid.levelName", { n: level + 1 })} · {levelTitle(level + 1)}
                   </p>
-                  <button className="primary" onClick={onBack}>
-                    {t(locale, "kid.backToLevels")}
-                  </button>
+                  <div className="row wrap gap">
+                    <button className="primary" onClick={() => onGoToLevel(level + 1)}>
+                      {t(locale, "kid.nextLevel")}
+                    </button>
+                    <button className="ghost" onClick={onBack}>
+                      {t(locale, "kid.backToLevels")}
+                    </button>
+                  </div>
                 </>
               ) : (
                 <button className="primary" onClick={next}>

@@ -2,7 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { LOCALES, deviceTimeZone, formatStamp, resolveSettings, timeZoneOptions } from "@/lib/settings";
-import { CURRENCIES, WEEKDAY_LABELS, formatReward } from "@/lib/rewards";
+import {
+  WEEKDAY_LABELS,
+  commonCurrencyOptions,
+  currencyExample,
+  currencyInfo,
+  formatReward,
+  otherCurrencyOptions,
+} from "@/lib/rewards";
 import { questionsTranslated } from "@/lib/quiz-i18n";
 import { actions } from "@/lib/client/api";
 import { reportBehaviour } from "@/lib/client/diagnostics";
@@ -41,6 +48,13 @@ export default function FamilySettingsCard({
   const [error, setError] = useState("");
 
   const zones = useMemo(() => timeZoneOptions(), []);
+  // Every currency in the world (ISO 4217), common ones first. Cryptocurrency is
+  // never in this list, and the API refuses a crypto code as well.
+  const currencies = useMemo(
+    () => ({ common: commonCurrencyOptions(), others: otherCurrencyOptions() }),
+    [],
+  );
+  const currency = currencyInfo(draft.currency);
   // A sample stamp, refreshed on a timer: reading the clock while rendering is not
   // allowed, and 30 seconds is plenty for a preview.
   const [sampleAt, setSampleAt] = useState(0);
@@ -146,7 +160,7 @@ export default function FamilySettingsCard({
         </label>
 
         <fieldset className="settings-group">
-          <legend>💰 Rewards — real money or Robux, not big points</legend>
+          <legend>💰 Rewards — real money in any world currency, or Robux</legend>
           <p className="muted small">
             A perfect (100%) answer earns the full amount below. A 90%+ near answer earns 80% of it — for example{" "}
             {formatReward(draft.maxRewardPerQuestionMinor, draft.rewardKind, draft.currency)} →{" "}
@@ -157,24 +171,50 @@ export default function FamilySettingsCard({
           <label>
             Children earn
             <select value={draft.rewardKind} onChange={(event) => update("rewardKind", event.target.value as FamilySettings["rewardKind"])}>
-              <option value="money">Real money (local currency)</option>
-              <option value="robux">Robux (Roblox)</option>
+              <option value="money">Real money — the family&apos;s own currency</option>
+              <option value="robux">Robux — Roblox&apos;s in-game currency</option>
             </select>
           </label>
           {draft.rewardKind === "money" && (
-            <label>
-              Currency
-              <select value={draft.currency} onChange={(event) => update("currency", event.target.value)}>
-                {CURRENCIES.map((c) => (
-                  <option key={c.code} value={c.code}>
-                    {c.label} ({c.code} {c.symbol})
-                  </option>
-                ))}
-              </select>
-            </label>
+            <>
+              <label>
+                Currency (all {currencies.common.length + currencies.others.length} world currencies — never cryptocurrency)
+                <select value={draft.currency} onChange={(event) => update("currency", event.target.value)}>
+                  <optgroup label="Common currencies">
+                    {currencies.common.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.label} ({c.code} {c.symbol})
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Every other currency in the world">
+                    {currencies.others.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.label} ({c.code} {c.symbol})
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+              </label>
+              <p className="muted small">
+                {currency.label} · {currency.symbol} ·{" "}
+                {currency.decimals === 0
+                  ? "no smaller unit"
+                  : `${currency.decimals} decimal place${currency.decimals === 1 ? "" : "s"}`}
+                . Amounts below are kept in the smallest unit of the currency, so 50 shows as{" "}
+                <strong>{currencyExample(currency.code)}</strong>. Cryptocurrency is never offered, and the server
+                refuses a crypto code even if one is sent by hand.
+              </p>
+            </>
+          )}
+          {draft.rewardKind === "robux" && (
+            <p className="muted small">
+              Robux is Roblox&apos;s own currency. A perfect answer earns whole Robux, and the amounts below are
+              counted in Robux — the app is the ledger, and a parent pays the child in Robux outside the app.
+            </p>
           )}
           <label>
-            Reward for a perfect answer ({draft.rewardKind === "robux" ? "Robux" : "cents"})
+            Reward for a perfect answer — {formatReward(draft.maxRewardPerQuestionMinor, draft.rewardKind, draft.currency)}
             <input
               type="number"
               min={0}
@@ -184,11 +224,11 @@ export default function FamilySettingsCard({
             />
           </label>
           <label>
-            Daily earn limit ({draft.rewardKind === "robux" ? "Robux" : "cents"}, 0 = no limit)
+            Daily earn limit ({draft.rewardKind === "robux" ? "Robux" : `smallest unit of ${currency.code}`}, 0 = no limit)
             <input type="number" min={0} value={draft.dailyEarnLimitMinor} onChange={(event) => update("dailyEarnLimitMinor", Number(event.target.value))} />
           </label>
           <label>
-            Weekly earn limit ({draft.rewardKind === "robux" ? "Robux" : "cents"}, 0 = no limit)
+            Weekly earn limit ({draft.rewardKind === "robux" ? "Robux" : `smallest unit of ${currency.code}`}, 0 = no limit)
             <input type="number" min={0} value={draft.weeklyEarnLimitMinor} onChange={(event) => update("weeklyEarnLimitMinor", Number(event.target.value))} />
           </label>
           <label className="inline">

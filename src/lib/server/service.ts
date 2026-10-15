@@ -3,9 +3,9 @@ import { HEARTBEAT_MS } from "./constants";
 import { recordBehaviour } from "./diagnostics";
 import { appendChat, appendReward, newId, pushEvent, type ChatRecord, type DbDoc, type DeviceRecord, type KidRecord, type ParentRecord } from "./store";
 import { addActivity, earnedSums, MAX_CHAT_CHARS, markChatSeen } from "./views";
-import type { Gender, Level, Theme } from "@/lib/types";
+import type { Gender, Level, LevelAction, Theme } from "@/lib/types";
 import { QUESTIONS } from "@/lib/quiz-data";
-import { answerScorePercent, levelQuestionCount, matchesAnswer, tierForLevel, tracksForAge } from "@/lib/quiz-logic";
+import { answerScorePercent, levelProgress, levelQuestionCount, matchesAnswer, tierForLevel, tracksForAge } from "@/lib/quiz-logic";
 import { resolveSettings } from "@/lib/settings";
 import { difficultyForQuestion, earningAllowedAt, formatReward, rewardForScore, timeLimitSeconds } from "@/lib/rewards";
 
@@ -132,10 +132,13 @@ export function recordAnswer(
 ): AnswerResult | null {
   const question = QUESTIONS.find((q) => q.id === questionId);
   if (!question) return null;
-  if (question.level !== tierForLevel(level)) return null;
-  // Levels still locked for this child cannot be answered, so rewards cannot be farmed early.
-  if (level > kid.unlockedLevel) return null;
-  if (!tracksForAge(kid.age).includes(question.track)) return null;
+  const tracks = tracksForAge(kid.age);
+  if (question.level !== tierForLevel(level, tracks)) return null;
+  // No level is locked: a child may answer any level, in any order, and come
+  // back to an unfinished one whenever they like. The question, its tier and
+  // the child's age track are still checked, so an answer can only ever count
+  // for the level it belongs to.
+  if (!tracks.includes(question.track)) return null;
   const settings = resolveSettings(doc.settings?.[kid.parentId]);
   const key = String(level);
   const used = kid.usedByLevel[key] ?? [];
@@ -232,15 +235,19 @@ export function recordAnswer(
 
   let unlockedLevel = kid.unlockedLevel;
   let levelFinished = false;
+  let bestAdvanced = false;
   if (!duplicate) {
     const { total, done } = levelQuestionCount(kid, level);
-    if (done >= total) {
+    if (total > 0 && done >= total) {
       levelFinished = true;
-      // Levels never stop: finishing always unlocks the next one (4, 5, … 8+).
+      // Levels never stop. Finishing any level moves the child's best level on
+      // (4, 5, … 8+), whichever order the levels were played in — but it never
+      // locks anything, so an unfinished earlier level is always still there.
       if (kid.unlockedLevel <= level) {
         kid.unlockedLevel = level + 1;
         unlockedLevel = kid.unlockedLevel;
-        addActivity(kid, { kind: "level", text: `Finished level ${level} and unlocked level ${kid.unlockedLevel}` });
+        bestAdvanced = true;
+        addActivity(kid, { kind: "level", text: `Finished level ${level} — best level is now ${kid.unlockedLevel}` });
       }
     }
   }
@@ -259,7 +266,7 @@ export function recordAnswer(
       accuracy: kid.attempted ? Math.round((kid.correct / kid.attempted) * 100) : 0,
     },
   });
-  if (levelFinished && unlockedLevel !== level) {
+  if (levelFinished && bestAdvanced) {
     pushEvent(doc, {
       type: "level.unlocked",
       parentId: kid.parentId,
@@ -440,6 +447,97 @@ export function resolveScreenTime(doc: DbDoc, kid: KidRecord, action: "approve" 
     });
   }
   return amount;
+}
+
+// ---------------------------------------------------------------------------
+// Levels: every level is open, in any order, for as long as the child likes.
+// ---------------------------------------------------------------------------
+
+export type LevelOutcome = {
+  /** The level the child is on now. */
+  level: Level;
+  /** What they asked for. */
+  action: LevelAction;
+  total: number;
+  done: number;
+  /** Answers cleared by a restart (0 for a plain open). */
+  cleared: number;
+  /** True when this level already had every question answered. */
+  wasComplete: boolean;
+  unlockedLevel: Level;
+};
+
+/**
+ * Opens a level for a child.
+ *
+ * `start` (the default) simply moves the child to that level and keeps every
+ * answer already given there, so an unfinished level carries on from where it
+ * stopped — that is the “resume” a child gets by tapping a level again.
+ *
+ * `restart` clears the answers of that one level, so its questions come round
+ * again from the first one. Points, screen time and the wallet are untouched:
+ * only this level's place in the bank is reset, and a note goes into the
+ * behavioural log so a parent can see a level was started over.
+ *
+ * Nothing here can be refused for being “too high” — that is the point.
+ */
+export function openLevel(doc: DbDoc, kid: KidRecord, level: Level, action: LevelAction = "start"): LevelOutcome {
+  const before = levelProgress(kid, level);
+  const key = String(level);
+  let cleared = 0;
+  if (action === "restart") {
+    cleared = (kid.usedByLevel[key] ?? []).length;
+    kid.usedByLevel = { ...kid.usedByLevel, [key]: [] };
+  }
+  kid.level = level;
+  touchKid(kid, true);
+
+  const after = levelProgress(kid, level);
+  if (action === "restart") {
+    addActivity(kid, {
+      kind: "level",
+      text: `Started level ${level} again from the first question${
+        before.status === "complete" ? " (it had been finished)" : ""
+      }`,
+    });
+    recordBehaviour(
+      doc,
+      {
+        code: "quiz.level_restarted",
+        parentId: kid.parentId,
+        kidId: kid.id,
+        kidName: kid.name,
+        vars: {
+          kidName: kid.name,
+          kidId: kid.id,
+          level,
+          cleared,
+          total: after.total,
+          kidLevel: level,
+          wasComplete: before.status === "complete" ? "yes" : "no",
+        },
+        context: { level, cleared, total: after.total, wasComplete: before.status === "complete" },
+      },
+      { throttleKey: `${kid.id}:${level}:restart` },
+    );
+  }
+
+  pushEvent(doc, {
+    type: "kid.updated",
+    parentId: kid.parentId,
+    kidId: kid.id,
+    payload: { kidName: kid.name, level, done: after.done, total: after.total, action },
+  });
+
+  return {
+    level,
+    action,
+    total: after.total,
+    done: after.done,
+    cleared,
+    wasComplete: before.status === "complete",
+    unlockedLevel: kid.unlockedLevel,
+  };
 }
 
 export type SendChatResult = { ok: true; message: ChatRecord } | { ok: false; error: string };
