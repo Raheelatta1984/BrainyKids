@@ -4,12 +4,17 @@
 // Shared by the server and the browser, so a log line written on the server and
 // a log line written in a browser are stamped the same way.
 
-import type { DateFormat, FamilySettings, LocaleCode, TimeFormat } from "./types";
+import type { DateFormat, FamilySettings, LocaleCode, QuestionLanguage, TimeFormat } from "./types";
+import { isCurriculumCountry, isEducationStage } from "./curriculum";
 import { sanitiseCurrency } from "./rewards";
 
 export const DEFAULT_SETTINGS: FamilySettings = {
   timeZone: "",
   locale: "en",
+  questionLanguage: "same",
+  showQuestionTranslation: false,
+  curriculumCountry: "AU",
+  educationStage: "auto",
   dateFormat: "auto",
   timeFormat: "auto",
   kidVoiceOver: true,
@@ -77,6 +82,10 @@ export function isLocaleCode(value: unknown): value is LocaleCode {
   return typeof value === "string" && LOCALE_CODES.has(value);
 }
 
+export function isQuestionLanguage(value: unknown): value is QuestionLanguage {
+  return value === "same" || isLocaleCode(value);
+}
+
 export function isRtl(locale: LocaleCode | string | undefined | null): boolean {
   return localeInfo(locale).rtl;
 }
@@ -87,6 +96,11 @@ export function resolveSettings(input?: Partial<FamilySettings> | null): FamilyS
   return {
     timeZone: typeof input.timeZone === "string" && isValidTimeZone(input.timeZone) ? input.timeZone : "",
     locale: isLocaleCode(input.locale) ? input.locale : DEFAULT_SETTINGS.locale,
+    questionLanguage: isQuestionLanguage(input.questionLanguage) ? input.questionLanguage : DEFAULT_SETTINGS.questionLanguage,
+    showQuestionTranslation:
+      typeof input.showQuestionTranslation === "boolean" ? input.showQuestionTranslation : DEFAULT_SETTINGS.showQuestionTranslation,
+    curriculumCountry: isCurriculumCountry(input.curriculumCountry) ? input.curriculumCountry : DEFAULT_SETTINGS.curriculumCountry,
+    educationStage: isEducationStage(input.educationStage) ? input.educationStage : DEFAULT_SETTINGS.educationStage,
     dateFormat: isDateFormat(input.dateFormat) ? input.dateFormat : DEFAULT_SETTINGS.dateFormat,
     timeFormat: isTimeFormat(input.timeFormat) ? input.timeFormat : DEFAULT_SETTINGS.timeFormat,
     kidVoiceOver: typeof input.kidVoiceOver === "boolean" ? input.kidVoiceOver : DEFAULT_SETTINGS.kidVoiceOver,

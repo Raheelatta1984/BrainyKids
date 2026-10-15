@@ -1,5 +1,32 @@
 export type Track = "early" | "selective" | "naplan";
 
+export type QuestionTemplateKey =
+  | "addition"
+  | "subtraction"
+  | "multiplication"
+  | "division"
+  | "sequence"
+  | "shape"
+  | "perimeter"
+  | "area"
+  | "fraction"
+  | "percentage"
+  | "ratio"
+  | "average"
+  | "spelling"
+  | "money"
+  | "linear-equation"
+  | "quadratic"
+  | "gradient"
+  | "pythagoras"
+  | "ohms-law"
+  | "molar-mass"
+  | "differentiate"
+  | "integrate"
+  | "logarithm"
+  | "kinematics"
+  | "probability";
+
 export type Question = {
   id: string;
   level: 1 | 2 | 3;
@@ -11,6 +38,9 @@ export type Question = {
   choices: string[];
   answer: string;
   explain: string;
+  /** Translation template and interpolated values for generated, curriculum-aware questions. */
+  templateKey?: QuestionTemplateKey;
+  templateValues?: Record<string, string | number>;
 };
 
 // Original practice questions written in the style of selective and NAPLAN-style tests.

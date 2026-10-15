@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "selftest": "tsx scripts/webauthn-selftest.ts",
     "levels-selftest": "tsx scripts/levels-currency-selftest.ts",
+    "quiz-selftest": "tsx scripts/quiz-selftest.ts",
     "behaviour:report": "tsx scripts/behaviour-report.ts",
     "reset-password": "node scripts/reset-password.mjs"
   },

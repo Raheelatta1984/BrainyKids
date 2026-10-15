@@ -8,11 +8,10 @@
 //
 // Run it with `npm run levels-selftest`. It touches no files and no database.
 
-import { QUESTIONS } from "../src/lib/quiz-data";
-import { MAX_LEVEL, levelProgress, levelToResume, tierForLevel, tracksForAge, unfinishedLevels } from "../src/lib/quiz-logic";
+import { MAX_LEVEL, levelProgress, levelToResume, unfinishedLevels } from "../src/lib/quiz-logic";
 import { CRYPTO_CODES, currencyOptions, formatReward, isCurrencyCode, isCryptoCode, sanitiseCurrency, currencyInfo } from "../src/lib/rewards";
 import { resolveSettings } from "../src/lib/settings";
-import { createKidRecord, openLevel, recordAnswer, type CreateKidInput } from "../src/lib/server/service";
+import { createKidRecord, issueNextQuestion, openLevel, recordAnswer, type CreateKidInput } from "../src/lib/server/service";
 import { emptyDoc, newId, type DbDoc, type KidRecord } from "../src/lib/server/store";
 
 let failures = 0;
@@ -38,12 +37,6 @@ function child(doc: DbDoc, age = 9): KidRecord {
   return createKidRecord(doc, newId(), input);
 }
 
-function questionFor(kid: KidRecord, level: number) {
-  const tracks = tracksForAge(kid.age);
-  const tier = tierForLevel(level, tracks);
-  return QUESTIONS.find((q) => q.level === tier && tracks.includes(q.track))!;
-}
-
 console.log("\nLevels: every level is open, in any order");
 
 {
@@ -53,8 +46,8 @@ console.log("\nLevels: every level is open, in any order");
 
   // A brand-new child (best level 1) can answer Level 40 straight away.
   const far = 40;
-  const question = questionFor(kid, far);
-  const answered = recordAnswer(doc, kid, question.id, question.answer, far, { elapsedSeconds: 0 });
+  const question = issueNextQuestion(doc, kid, far);
+  const answered = question ? recordAnswer(doc, kid, question.id, question.answer, far, { elapsedSeconds: 0 }) : null;
   check("a level far above the child's best level can be answered", answered !== null && answered.correct);
   check("nothing was refused for being 'locked'", doc.behaviour.every((line) => line.code !== "quiz.answer_rejected"));
   check("the answer counted against that level only", (kid.usedByLevel[String(far)] ?? []).length === 1);
@@ -63,7 +56,7 @@ console.log("\nLevels: every level is open, in any order");
     let done = false;
     let guard = 0;
     while (!done && guard++ < 50) {
-      const next = QUESTIONS.find((q) => q.level === 3 && tracksForAge(kid.age).includes(q.track) && !(kid.usedByLevel[String(far)] ?? []).includes(q.id));
+      const next = issueNextQuestion(doc, kid, far);
       if (!next) break;
       recordAnswer(doc, kid, next.id, next.answer, far, { elapsedSeconds: 0 });
       done = kid.unlockedLevel === far + 1;
@@ -83,17 +76,18 @@ console.log("\nResume: an unfinished level carries on where it stopped");
   const doc = emptyDoc();
   const kid = child(doc);
   const level = 2;
-  const pool = QUESTIONS.filter((q) => q.level === tierForLevel(level, tracksForAge(kid.age)) && tracksForAge(kid.age).includes(q.track));
-  recordAnswer(doc, kid, pool[0].id, "definitely wrong", level, { elapsedSeconds: 0 });
+  const first = issueNextQuestion(doc, kid, level);
+  if (first) recordAnswer(doc, kid, first.id, "definitely wrong", level, { elapsedSeconds: 0 });
+  const resumed = issueNextQuestion(doc, kid, level);
 
   const progress = levelProgress(kid, level);
   check("the level reads as in progress", progress.status === "in-progress" && progress.done === 1);
+  check("the shown question is not reused when resuming", first !== null && resumed !== null && first.id !== resumed.id);
   const resume = levelToResume(kid);
   check("the picker offers exactly that level to carry on", resume !== null && resume.level === level && resume.done === 1);
   check("the unfinished level is listed for the parent", unfinishedLevels(kid).some((entry) => entry.level === level));
 
-  const nextQuestionIds = pool.filter((q) => !(kid.usedByLevel[String(level)] ?? []).includes(q.id)).map((q) => q.id);
-  check("only unanswered questions are left in it", nextQuestionIds.length === pool.length - 1);
+  check("answered progress is tracked separately from the one active fresh question", (kid.usedByLevel[String(level)] ?? []).length === 1 && resumed !== null && (kid.activeQuestionsByLevel[String(level)]?.id ?? "") === resumed.id);
 }
 
 console.log("\nRestart: one level starts again, nothing else is touched");
@@ -102,28 +96,30 @@ console.log("\nRestart: one level starts again, nothing else is touched");
   const doc = emptyDoc();
   const kid = child(doc);
   const level = 1;
-  const question = questionFor(kid, level);
-  recordAnswer(doc, kid, question.id, question.answer, level, { elapsedSeconds: 0 });
+  const question = issueNextQuestion(doc, kid, level);
+  if (question) recordAnswer(doc, kid, question.id, question.answer, level, { elapsedSeconds: 0 });
   const pointsBefore = kid.points;
   const walletBefore = kid.walletBalanceMinor ?? 0;
 
   const outcome = openLevel(doc, kid, level, "restart");
+  const freshQuestion = issueNextQuestion(doc, kid, level);
   check("the restart reports what it cleared", outcome.cleared === 1);
   check("the level has no answers left", (kid.usedByLevel[String(level)] ?? []).length === 0);
-  check("the question can be asked again", levelProgress(kid, level).done === 0);
+  check("the restarted level receives a fresh question, never the old one", question !== null && freshQuestion !== null && question.id !== freshQuestion.id);
+  check("the global question history remains intact", kid.askedQuestionIds.length === 2);
   check("points are kept", kid.points === pointsBefore);
   check("money is kept", (kid.walletBalanceMinor ?? 0) === walletBefore);
   check("the restart is written to the behavioural log", doc.behaviour.some((line) => line.code === "quiz.level_restarted"));
   check("the wallet ledger was not touched", doc.rewards.length === 0 || doc.rewards.every((entry) => entry.type !== "realise_approved"));
 }
 
-console.log("\nYoung children: every level still has questions");
+console.log("\nYoung children: every level still has age-appropriate questions");
 
 {
-  const tracks = tracksForAge(4);
-  const tier = tierForLevel(9, tracks);
-  const hasQuestions = QUESTIONS.some((q) => q.level === tier && tracks.includes(q.track));
-  check("Level 9 has questions for a four-year-old", hasQuestions, `tier ${tier}`);
+  const doc = emptyDoc();
+  const young = child(doc, 4);
+  const question = issueNextQuestion(doc, young, 9);
+  check("Level 9 generates an early-years question for a four-year-old", question !== null && question.track === "early");
   check("the level number is capped", MAX_LEVEL === 999);
 }
 

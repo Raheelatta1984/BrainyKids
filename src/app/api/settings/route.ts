@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
-import { isDateFormat, isLocaleCode, isTimeFormat, isValidTimeZone, localeInfo, resolveSettings } from "@/lib/settings";
+import { isDateFormat, isLocaleCode, isQuestionLanguage, isTimeFormat, isValidTimeZone, localeInfo, resolveSettings } from "@/lib/settings";
+import { curriculumCountryInfo, educationGradeCountry, isCurriculumCountry, isEducationStage } from "@/lib/curriculum";
 import { isCurrencyCode, isRewardKind } from "@/lib/rewards";
 import { error, json, readBody, route } from "@/lib/server/http";
 import { recordBehaviour } from "@/lib/server/diagnostics";
@@ -11,7 +12,7 @@ import type { FamilySettings } from "@/lib/types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const BOOLEAN_KEYS = ["kidVoiceOver", "parentVoiceOver", "kidDictation", "earnScheduleEnabled"] as const;
+const BOOLEAN_KEYS = ["kidVoiceOver", "parentVoiceOver", "kidDictation", "showQuestionTranslation", "earnScheduleEnabled"] as const;
 
 const NUMBER_RANGES: Partial<Record<keyof FamilySettings, [number, number]>> = {
   maxRewardPerQuestionMinor: [0, 100_000],
@@ -55,6 +56,18 @@ export const PATCH = route(async (req: NextRequest) => {
     if (isLocaleCode(body.locale)) patch.locale = body.locale;
     else rejected.push({ field: "locale", value: body.locale, fallback: "en" });
   }
+  if (provided("questionLanguage")) {
+    if (isQuestionLanguage(body.questionLanguage)) patch.questionLanguage = body.questionLanguage;
+    else rejected.push({ field: "questionLanguage", value: body.questionLanguage, fallback: "same" });
+  }
+  if (provided("curriculumCountry")) {
+    if (isCurriculumCountry(body.curriculumCountry)) patch.curriculumCountry = body.curriculumCountry;
+    else rejected.push({ field: "curriculumCountry", value: body.curriculumCountry, fallback: "AU" });
+  }
+  if (provided("educationStage")) {
+    if (isEducationStage(body.educationStage)) patch.educationStage = body.educationStage;
+    else rejected.push({ field: "educationStage", value: body.educationStage, fallback: "auto" });
+  }
   if (provided("dateFormat")) {
     if (isDateFormat(body.dateFormat)) patch.dateFormat = body.dateFormat;
     else rejected.push({ field: "dateFormat", value: body.dateFormat, fallback: "auto" });
@@ -66,7 +79,7 @@ export const PATCH = route(async (req: NextRequest) => {
   for (const key of BOOLEAN_KEYS) {
     if (!provided(key)) continue;
     if (typeof body[key] === "boolean") patch[key] = body[key] as boolean;
-    else rejected.push({ field: key, value: body[key], fallback: true });
+    else rejected.push({ field: key, value: body[key], fallback: key === "showQuestionTranslation" ? false : true });
   }
   // Rewards & timers (Master settings).
   if (provided("rewardKind")) {
@@ -99,10 +112,20 @@ export const PATCH = route(async (req: NextRequest) => {
 
   const outcome = await store.mutate((doc) => {
     const current = settingsForParent(doc, auth.parent.id);
-    for (const key of Object.keys(patch) as (keyof FamilySettings)[]) {
-      if (current[key] !== patch[key]) changed.push(`${key}=${String(patch[key])}`);
+    const nextValues: FamilySettings = { ...current, ...patch };
+    const gradeCountry = educationGradeCountry(nextValues.educationStage);
+    if (gradeCountry && gradeCountry !== nextValues.curriculumCountry) {
+      if (provided("educationStage")) {
+        rejected.push({ field: "educationStage", value: nextValues.educationStage, fallback: "auto" });
+      }
+      nextValues.educationStage = "auto";
     }
-    const next = resolveSettings({ ...current, ...patch });
+    const changedKeys = new Set(Object.keys(patch) as (keyof FamilySettings)[]);
+    if (current.educationStage !== nextValues.educationStage) changedKeys.add("educationStage");
+    for (const key of changedKeys) {
+      if (current[key] !== nextValues[key]) changed.push(`${key}=${String(nextValues[key])}`);
+    }
+    const next = resolveSettings(nextValues);
     doc.settings = { ...(doc.settings ?? {}), [auth.parent.id]: next };
 
     for (const item of rejected) {
@@ -134,6 +157,10 @@ export const PATCH = route(async (req: NextRequest) => {
     return { settings: next, rejected: rejected.length };
   });
 
+  const questionLocale = outcome.settings.questionLanguage === "same"
+    ? outcome.settings.locale
+    : outcome.settings.questionLanguage;
+  const curriculum = curriculumCountryInfo(outcome.settings.curriculumCountry);
   return json({
     settings: outcome.settings,
     changed,
@@ -142,6 +169,6 @@ export const PATCH = route(async (req: NextRequest) => {
     message:
       changed.length === 0
         ? "Nothing changed."
-        : `Saved. Dates, times and questions now follow ${localeInfo(outcome.settings.locale).label}.`,
+        : `Saved. App: ${localeInfo(outcome.settings.locale).label}; questions: ${localeInfo(questionLocale).label} · ${curriculum.label} curriculum.`,
   });
 });

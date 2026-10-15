@@ -707,6 +707,20 @@ button.link {
   font-size: 22px;
 }
 
+.question-translation {
+  color: var(--muted);
+  margin: -10px 0 8px;
+  font-size: 0.95rem;
+}
+
+.option-translation {
+  display: block;
+  margin: 5px 0 0 28px;
+  color: var(--muted);
+  font-size: 0.85em;
+  font-weight: 500;
+}
+
 .choices {
   display: grid;
   gap: 12px;

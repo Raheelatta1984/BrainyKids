@@ -13,15 +13,13 @@ import {
   levelToResume,
   levelWindow,
   matchChoice,
-  tierForLevel,
-  tracksForAge,
 } from "@/lib/quiz-logic";
 import { difficultyForQuestion, formatCountdown, formatReward, timeLimitSeconds } from "@/lib/rewards";
 import { localiseQuestion, type LocalisedQuestion } from "@/lib/quiz-i18n";
+import { educationGradeCountry, educationStageLabel, curriculumCountryInfo, resolveEducationStage } from "@/lib/curriculum";
 import { t } from "@/lib/i18n";
 import { isRtl } from "@/lib/settings";
 import { listenOnce, recognitionSupported, speakText, speechSupported, stopSpeaking } from "@/lib/voice";
-import { QUESTIONS, type Question } from "@/lib/quiz-data";
 import ChatPanel from "@/components/ChatPanel";
 import type { FamilySettings, KidView, LeaderboardEntry, Level, LevelAction, LiveEvent, Theme } from "@/lib/types";
 
@@ -68,6 +66,7 @@ export default function KidApp({
 }) {
   const theme = THEMES[kid.theme];
   const locale = settings.locale;
+  const questionLocale = settings.questionLanguage === "same" ? locale : settings.questionLanguage;
   const [level, setLevel] = useState<Level | null>(null);
   const [showSignOut, setShowSignOut] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -195,10 +194,11 @@ export default function KidApp({
         <LevelPicker kid={kid} onPick={setLevel} live={live} settings={settings} leaderboard={leaderboard} />
       ) : (
         <Quiz
-          key={`${kid.id}-${level}-${locale}`}
+          key={`${kid.id}-${level}-${locale}-${questionLocale}`}
           kid={kid}
           level={level}
           locale={locale}
+          questionLocale={questionLocale}
           settings={settings}
           voiceOn={voiceOn}
           onBack={() => setLevel(null)}
@@ -257,7 +257,7 @@ function toastForKid(event: LiveEvent, kidId: string, locale: FamilySettings["lo
     case "reward.approved":
       return { id: event.id, emoji: "💰", title: "Your money was approved!", body: "Your wallet is reset — ask your parent for your money" };
     case "reward.declined":
-      return { id: event.id, emoji: "💬", title: "Your realise request was sent back", body: "Your balance is still saved" };
+      return { id: event.id, emoji: "💬", title: "Your money request was sent back", body: "Your full balance is still in your wallet. You can ask again whenever you are ready." };
     case "screen_time.approved":
       return {
         id: event.id,
@@ -268,7 +268,7 @@ function toastForKid(event: LiveEvent, kidId: string, locale: FamilySettings["lo
     case "screen_time.granted":
       return { id: event.id, emoji: "🎁", title: `Bonus: ${payload.minutes ?? 0} min`, body: "From your parent" };
     case "screen_time.declined":
-      return { id: event.id, emoji: "💬", title: "A parent sent your request back", body: "Try again soon" };
+      return { id: event.id, emoji: "💬", title: "A parent sent your request back", body: "Your points are still available. You can send the request again." };
     default:
       return null;
   }
@@ -311,18 +311,23 @@ function LevelPicker({
   leaderboard: LeaderboardEntry[];
 }) {
   const locale = settings.locale;
+  const curriculum = curriculumCountryInfo(kid.curriculumCountry ?? settings.curriculumCountry);
+  const selectedStage = kid.educationStage ?? settings.educationStage;
+  const effectiveStage = educationGradeCountry(selectedStage) && educationGradeCountry(selectedStage) !== curriculum.code ? "auto" : selectedStage;
+  const stage = effectiveStage === "auto" ? educationStageLabel(resolveEducationStage(kid.age, effectiveStage, curriculum.code)) : educationStageLabel(effectiveStage);
+  const stageLabel = effectiveStage === "auto" ? `${stage} · age-based` : stage;
   const [busy, setBusy] = useState(false);
-  const [asked, setAsked] = useState(false);
-  const [askedRealise, setAskedRealise] = useState(false);
   const [error, setError] = useState("");
   // Which level is asking “start again?” before any answer is cleared.
   const [restartAsk, setRestartAsk] = useState<Level | null>(null);
   const [jump, setJump] = useState("");
+
   // No level is locked. The list is a window around the child (never an
   // ever-growing wall of buttons) plus a box that jumps to any level number.
   const levels = levelWindow(kid);
   const resume = levelToResume(kid);
   const best = Math.max(1, kid.unlockedLevel);
+  const latestRealise = kid.rewardLedger.find((entry) => entry.type !== "earned");
 
   /**
    * Opens a level. `start` carries on where the child stopped in it (that is
@@ -361,12 +366,11 @@ function LevelPicker({
       setError(result.error);
       return;
     }
-    setAsked(true);
     reportBehaviour("quiz.screen_time_requested", {
       kidName: kid.name,
       minutes: result.data.minutes,
       kidId: kid.id,
-      pointsSpent: result.data.minutes,
+      pointsAvailable: result.data.minutes,
     });
     await live.refresh();
   }
@@ -380,14 +384,15 @@ function LevelPicker({
       setError(result.error);
       return;
     }
-    setAskedRealise(true);
     await live.refresh();
   }
 
   return (
     <section className="card">
       <h2>{t(locale, "kid.chooseLevel")}</h2>
-      <p className="muted">{kid.age <= 4 ? t(locale, "kid.earlyNote") : t(locale, "kid.mixedNote")}</p>
+      <p className="muted">
+        Practising {curriculum.label} · {stageLabel}. New questions match this grade and level, and stay fresh across levels.
+      </p>
       <p className="muted small">
         {t(locale, "kid.anyLevel")}{" "}
         <strong>
@@ -425,7 +430,11 @@ function LevelPicker({
                 : t(locale, "kid.start");
           return (
             <div key={level} className={`level-card ${level === kid.level ? "current" : ""}`}>
-              <button className="level" disabled={busy} onClick={() => void choose(level)}>
+              <button
+                className="level"
+                disabled={busy}
+                onClick={() => void choose(level, progress.status === "complete" ? "restart" : "start")}
+              >
                 <strong>
                   {t(locale, "kid.levelName", { n: level })} · {levelTitle(level)}
                 </strong>
@@ -497,27 +506,39 @@ function LevelPicker({
         </p>
         <button
           className="primary"
-          disabled={kid.walletBalanceMinor === 0 || kid.requestedRewardMinor > 0 || busy || askedRealise}
+          disabled={kid.walletBalanceMinor === 0 || kid.requestedRewardMinor > 0 || busy}
           onClick={() => void askToRealise()}
         >
-          {kid.requestedRewardMinor > 0 || askedRealise
+          {kid.requestedRewardMinor > 0
             ? t(locale, "kid.waitingParent")
             : `Ask a parent to realise ${formatReward(kid.walletBalanceMinor, settings.rewardKind, settings.currency)}`}
         </button>
-        {kid.requestedRewardMinor > 0 && (
-          <p className="muted">Waiting for a parent to approve {formatReward(kid.requestedRewardMinor, settings.rewardKind, settings.currency)}. Your wallet resets when they approve.</p>
-        )}
+        {kid.requestedRewardMinor > 0 ? (
+          <p className="muted">
+            Waiting for a parent to approve {formatReward(kid.requestedRewardMinor, settings.rewardKind, settings.currency)}.
+            Your balance remains in your wallet until approval.
+          </p>
+        ) : latestRealise?.type === "realise_declined" ? (
+          <p className="muted">
+            Your request was sent back. Your balance is still here; you can ask again whenever you are ready.
+          </p>
+        ) : null}
       </div>
 
       <div className="request">
         <p>{t(locale, "kid.points", { points: kid.points })}</p>
-        <button className="primary" disabled={kid.points === 0 || busy || asked} onClick={() => void askForScreenTime()}>
-          {asked ? t(locale, "kid.waitingParent") : t(locale, "kid.askScreenTime", { points: kid.points })}
+        <button
+          className="primary"
+          disabled={kid.points === 0 || kid.requestedMinutes > 0 || busy}
+          onClick={() => void askForScreenTime()}
+        >
+          {kid.requestedMinutes > 0 ? t(locale, "kid.waitingParent") : t(locale, "kid.askScreenTime", { points: kid.points })}
         </button>
         {kid.requestedMinutes > 0 && (
-          <p className="muted">{t(locale, "kid.waitingAnswer", { minutes: kid.requestedMinutes })}</p>
+          <p className="muted">
+            {t(locale, "kid.waitingAnswer", { minutes: kid.requestedMinutes })} Your points stay available until the parent decides.
+          </p>
         )}
-        {asked && <p className="muted">{t(locale, "kid.parentTold")}</p>}
         {error && <p className="banner error">{error}</p>}
       </div>
 
@@ -530,6 +551,7 @@ function Quiz({
   kid,
   level,
   locale,
+  questionLocale,
   settings,
   voiceOn,
   onBack,
@@ -539,6 +561,7 @@ function Quiz({
   kid: KidView;
   level: Level;
   locale: FamilySettings["locale"];
+  questionLocale: FamilySettings["locale"];
   settings: FamilySettings;
   voiceOn: boolean;
   onBack: () => void;
@@ -546,8 +569,10 @@ function Quiz({
   onGoToLevel: (level: Level) => void;
   live: Live;
 }) {
-  const usedHere = useRef<Set<string>>(new Set());
-  const [question, setQuestion] = useState<LocalisedQuestion | null>(() => pickQuestion(kid, level, locale));
+  const [question, setQuestion] = useState<LocalisedQuestion | null>(null);
+  const [questionTranslation, setQuestionTranslation] = useState<LocalisedQuestion | null>(null);
+  const [loadingQuestion, setLoadingQuestion] = useState(true);
+  const [progressDone, setProgressDone] = useState(() => levelQuestionCount(kid, level).done);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -555,10 +580,39 @@ function Quiz({
   const [canListen, setCanListen] = useState(false);
   const [error, setError] = useState("");
   const startedAt = useRef<number>(Date.now());
-  const [secondsLeft, setSecondsLeft] = useState<number>(() =>
-    question ? timeLimitSeconds(settings, difficultyForQuestion(question)) : 0,
-  );
+  const requestNumber = useRef(0);
+  const [secondsLeft, setSecondsLeft] = useState(0);
   const answerRef = useRef<(canonical: string, shown: string) => Promise<void>>(async () => undefined);
+
+  const loadNextQuestion = useCallback(async () => {
+    const request = ++requestNumber.current;
+    setLoadingQuestion(true);
+    setError("");
+    const result = await actions.nextQuestion(level);
+    if (request !== requestNumber.current) return;
+    if (!result.ok) {
+      setQuestion(null);
+      setQuestionTranslation(null);
+      setError(result.error);
+      setLoadingQuestion(false);
+      return;
+    }
+    setProgressDone(result.data.progress.done);
+    setQuestion(result.data.question ? localiseQuestion(result.data.question, questionLocale) : null);
+    setQuestionTranslation(
+      result.data.question && settings.showQuestionTranslation && questionLocale !== locale
+        ? localiseQuestion(result.data.question, locale)
+        : null,
+    );
+    setLoadingQuestion(false);
+  }, [level, locale, questionLocale, settings.showQuestionTranslation]);
+
+  useEffect(() => {
+    void loadNextQuestion();
+    return () => {
+      requestNumber.current += 1;
+    };
+  }, [loadNextQuestion]);
 
   // Per-question timer: harder questions get more time (Master settings, max
   // 10 minutes). When it runs out the question is marked as timed out.
@@ -595,12 +649,13 @@ function Quiz({
     if (!question || !voiceOn) return;
     speakText(
       `${question.question} ${question.choices.map((choice, index) => `${"ABCD"[index]}, ${choice}`).join(". ")}`,
-      locale,
+      questionLocale,
     );
-  }, [question, locale, voiceOn]);
+  }, [question, questionLocale, voiceOn]);
 
-  const { done, total } = levelQuestionCount(kid, level);
-  const finished = question === null;
+  const total = levelQuestionCount(kid, level).total;
+  const done = progressDone;
+  const finished = question === null && !loadingQuestion && !error;
 
   async function answer(canonical: string, shown: string) {
     if (!question || feedback || busy) return;
@@ -608,7 +663,8 @@ function Quiz({
     setError("");
     // The chosen wording is what the child taps; the English wording is what the
     // server marks, so a translated quiz is still marked fairly.
-    const result = await actions.answer(question.id, canonical, level);
+    const elapsedSeconds = Math.max(0, (Date.now() - startedAt.current) / 1000);
+    const result = await actions.answer(question.id, canonical, level, elapsedSeconds);
     setBusy(false);
     if (!result.ok) {
       setError(result.error);
@@ -621,7 +677,7 @@ function Quiz({
       return;
     }
     const outcome = result.data.result;
-    usedHere.current.add(question.id);
+    setProgressDone((value) => Math.min(total, value + 1));
     setFeedback({
       correct: outcome.correct,
       picked: shown,
@@ -635,12 +691,10 @@ function Quiz({
       rewardBlocked: outcome.rewardBlocked,
     });
     if (voiceOn) {
-      speakText(
-        outcome.correct
-          ? `${t(locale, "kid.correct")} ${question.explain}`
-          : `${t(locale, "kid.notQuite", { answer: question.choices[question.answerIndex] ?? outcome.answer })} ${question.explain}`,
-        locale,
-      );
+      const status = outcome.correct
+        ? t(locale, "kid.correct")
+        : t(locale, "kid.notQuite", { answer: question.choices[question.answerIndex] ?? outcome.answer });
+      speakText(questionLocale === locale ? `${status} ${question.explain}` : question.explain, questionLocale);
     }
     await live.refresh();
   }
@@ -665,7 +719,7 @@ function Quiz({
   function startListening() {
     setError("");
     const handle = listenOnce({
-      locale,
+      locale: questionLocale,
       onText: (text) => {
         setTyped(text);
         checkTyped(text);
@@ -679,12 +733,9 @@ function Quiz({
   function next() {
     setFeedback(null);
     setTyped("");
-    const nextOne = pickQuestion(kid, level, locale, usedHere.current);
-    if (!nextOne) {
-      setQuestion(null);
-      return;
-    }
-    setQuestion(nextOne);
+    setQuestion(null);
+    setQuestionTranslation(null);
+    void loadNextQuestion();
   }
 
   return (
@@ -709,7 +760,16 @@ function Quiz({
         </span>
       )}
 
-      {finished ? (
+      {loadingQuestion ? (
+        <div className="center" role="status">
+          <p>Preparing a fresh question…</p>
+        </div>
+      ) : !question && error ? (
+        <div className="center">
+          <p className="banner error">{error}</p>
+          <button className="primary" onClick={() => void loadNextQuestion()}>Try again</button>
+        </div>
+      ) : finished ? (
         <div className="center">
           <h2>{t(locale, "kid.levelFinished")}</h2>
           <p>{t(locale, "kid.levelFinishedBody")}</p>
@@ -722,13 +782,16 @@ function Quiz({
             </button>
           </div>
         </div>
-      ) : (
+      ) : question ? (
         <>
           <div className={`visual ${feedback ? (feedback.correct ? "pop" : "shake") : ""}`} aria-hidden="true">
             {question.visual}
           </div>
-          <h2 className="question">{question.question}</h2>
-          <button className="link" onClick={() => speakText(question.question, locale)}>
+          <h2 className="question" lang={questionLocale} dir={isRtl(questionLocale) ? "rtl" : "ltr"}>{question.question}</h2>
+          {questionTranslation && (
+            <p className="question-translation" lang={locale} dir={isRtl(locale) ? "rtl" : "ltr"}>{questionTranslation.question}</p>
+          )}
+          <button className="link" onClick={() => speakText(question.question, questionLocale)}>
             🔊 {t(locale, "kid.readQuestion")}
           </button>
 
@@ -744,6 +807,9 @@ function Quiz({
                   onClick={() => void answer(question.canonicalChoices[index] ?? choice, choice)}
                 >
                   <kbd>{"ABCD"[index]}</kbd> {choice}
+                  {questionTranslation?.choices[index] && questionTranslation.choices[index] !== choice && (
+                    <small className="option-translation">{questionTranslation.choices[index]}</small>
+                  )}
                 </button>
               );
             })}
@@ -795,13 +861,16 @@ function Quiz({
                       : ""}
                 </p>
               )}
-              <p>{feedback.explain}</p>
+              <p lang={questionLocale}>{feedback.explain}</p>
+              {questionTranslation && <p className="question-translation" lang={locale}>{questionTranslation.explain}</p>}
               <button
                 className="link"
                 onClick={() =>
                   speakText(
-                    `${feedback.correct ? `${t(locale, "kid.correct")} ` : `${t(locale, "kid.notQuite", { answer: feedback.answer })} `}${feedback.explain}`,
-                    locale,
+                    questionLocale === locale
+                      ? `${feedback.correct ? `${t(locale, "kid.correct")} ` : `${t(locale, "kid.notQuite", { answer: feedback.answer })} `}${feedback.explain}`
+                      : feedback.explain,
+                    questionLocale,
                   )
                 }
               >
@@ -829,7 +898,7 @@ function Quiz({
             </div>
           )}
         </>
-      )}
+      ) : null}
     </section>
   );
 }
@@ -894,19 +963,4 @@ function SignOutDialog({
       </div>
     </div>
   );
-}
-
-/** Picks an unanswered question for this level in the family's language. */
-function pickQuestion(
-  kid: KidView,
-  level: Level,
-  locale: FamilySettings["locale"],
-  extraUsed?: Set<string>,
-): LocalisedQuestion | null {
-  const tracks = tracksForAge(kid.age);
-  const used = new Set([...(kid.usedByLevel[String(level)] ?? []), ...(extraUsed ?? [])]);
-  const tier = tierForLevel(level);
-  const pool: Question[] = QUESTIONS.filter((q) => q.level === tier && tracks.includes(q.track) && !used.has(q.id));
-  if (pool.length === 0) return null;
-  return localiseQuestion(pool[Math.floor(Math.random() * pool.length)], locale);
 }

@@ -2,10 +2,10 @@ import { newToken, tokenHash } from "./auth";
 import { HEARTBEAT_MS } from "./constants";
 import { recordBehaviour } from "./diagnostics";
 import { appendChat, appendReward, newId, pushEvent, type ChatRecord, type DbDoc, type DeviceRecord, type KidRecord, type ParentRecord } from "./store";
-import { addActivity, earnedSums, MAX_CHAT_CHARS, markChatSeen } from "./views";
+import { addActivity, earnedSums, MAX_CHAT_CHARS, markChatSeen, settingsForKid } from "./views";
 import type { Gender, Level, LevelAction, Theme } from "@/lib/types";
-import { QUESTIONS } from "@/lib/quiz-data";
-import { answerScorePercent, levelProgress, levelQuestionCount, matchesAnswer, tierForLevel, tracksForAge } from "@/lib/quiz-logic";
+import { answerScorePercent, levelProgress, levelQuestionCount, matchesAnswer } from "@/lib/quiz-logic";
+import { generateQuestion } from "@/lib/question-engine";
 import { resolveSettings } from "@/lib/settings";
 import { difficultyForQuestion, earningAllowedAt, formatReward, rewardForScore, timeLimitSeconds } from "@/lib/rewards";
 
@@ -32,10 +32,15 @@ export function createKidRecord(doc: DbDoc, parentId: string, input: CreateKidIn
     pinHash: input.pinHash,
     age: input.age,
     gender: input.gender,
+    curriculumCountry: null,
+    educationStage: null,
     theme: input.theme,
     level: 1,
     unlockedLevel: 1,
     usedByLevel: {},
+    askedQuestionIds: [],
+    nextQuestionSequence: 0,
+    activeQuestionsByLevel: {},
     points: 0,
     attempted: 0,
     correct: 0,
@@ -118,9 +123,42 @@ function earnedSumsFromLedger(doc: DbDoc, kid: KidRecord): { today: number; week
 }
 
 /**
- * Records an answer. Correctness, closeness, the timer and the reward are all
- * decided on the server from the question bank and the family's Master
- * settings, so a device cannot simply claim money.
+ * Issue the active question for one level, or create a fresh one. Issuing is
+ * persisted before it is returned, so refreshes, level jumps and retries all
+ * resume that exact item instead of showing a question again later.
+ */
+export function issueNextQuestion(doc: DbDoc, kid: KidRecord, level: Level) {
+  if (!Number.isInteger(level) || level < 1 || level > 999) return null;
+  const key = String(level);
+  const active = kid.activeQuestionsByLevel?.[key];
+  if (active) return active;
+
+  const progress = levelQuestionCount(kid, level);
+  if (progress.done >= progress.total) return null;
+
+  const settings = settingsForKid(doc, kid);
+  const profile = {
+    age: kid.age,
+    gender: kid.gender,
+    name: kid.name,
+    curriculumCountry: settings.curriculumCountry,
+    educationStage: settings.educationStage,
+  };
+  let sequence = kid.nextQuestionSequence ?? kid.askedQuestionIds.length;
+  let question = generateQuestion(sequence, level, profile);
+  while (kid.askedQuestionIds.includes(question.id)) {
+    sequence += 1;
+    question = generateQuestion(sequence, level, profile);
+  }
+  kid.nextQuestionSequence = sequence + 1;
+  kid.askedQuestionIds.push(question.id);
+  kid.activeQuestionsByLevel = { ...kid.activeQuestionsByLevel, [key]: question };
+  return question;
+}
+
+/**
+ * Records an answer. The server only accepts the question it has issued to the
+ * child's current level, and decides correctness, timing and rewards itself.
  */
 export function recordAnswer(
   doc: DbDoc,
@@ -130,31 +168,31 @@ export function recordAnswer(
   level: Level,
   options: { elapsedSeconds?: number } = {},
 ): AnswerResult | null {
-  const question = QUESTIONS.find((q) => q.id === questionId);
-  if (!question) return null;
-  const tracks = tracksForAge(kid.age);
-  if (question.level !== tierForLevel(level, tracks)) return null;
-  // No level is locked: a child may answer any level, in any order, and come
-  // back to an unfinished one whenever they like. The question, its tier and
-  // the child's age track are still checked, so an answer can only ever count
-  // for the level it belongs to.
-  if (!tracks.includes(question.track)) return null;
-  const settings = resolveSettings(doc.settings?.[kid.parentId]);
   const key = String(level);
+  const question = kid.activeQuestionsByLevel?.[key];
+  if (!question || question.id !== questionId || !kid.askedQuestionIds.includes(questionId)) return null;
+  const settings = resolveSettings(doc.settings?.[kid.parentId]);
   const used = kid.usedByLevel[key] ?? [];
   const duplicate = used.includes(questionId);
+  // A previously answered item can never be replayed, even after its level is
+  // restarted. A restart clears progress, not the child's lifetime question history.
+  if (duplicate) return null;
 
   const limitSeconds = timeLimitSeconds(settings, difficultyForQuestion(question));
   // Elapsed is measured on the kid device at the moment of answering, so no
   // network grace is needed — only a small allowance for the timer tick.
   const timedOut = typeof options.elapsedSeconds === "number" && options.elapsedSeconds >= limitSeconds - 0.5;
   const scorePercent = duplicate || timedOut ? 0 : answerScorePercent(picked, question.answer);
-  const correct = !timedOut && (matchesAnswer(picked, question.answer) || picked.trim() === question.answer);
+  const isListedChoice = question.choices.includes(picked.trim());
+  const correct = !timedOut && (isListedChoice ? picked.trim() === question.answer : matchesAnswer(picked, question.answer));
 
   let earnedMinor = 0;
   let rewardBlocked: AnswerResult["rewardBlocked"] = null;
   if (!duplicate) {
     kid.usedByLevel = { ...kid.usedByLevel, [key]: [...used, questionId] };
+    const activeQuestions = { ...kid.activeQuestionsByLevel };
+    delete activeQuestions[key];
+    kid.activeQuestionsByLevel = activeQuestions;
     kid.attempted += 1;
     kid.correct += correct ? 1 : 0;
     kid.points += correct ? 1 : 0;
@@ -399,9 +437,10 @@ export function resolveRealisation(doc: DbDoc, kid: KidRecord, action: "approve"
 
 export function requestScreenTime(doc: DbDoc, kid: KidRecord): number {
   const minutes = kid.points;
-  if (minutes <= 0) return 0;
-  kid.requestedMinutes += minutes;
-  kid.points = 0;
+  if (minutes <= 0 || kid.requestedMinutes > 0) return 0;
+  // Keep the points until a parent approves. Sending the request back simply
+  // clears the pending amount, so the kid's original points are still there.
+  kid.requestedMinutes = minutes;
   addActivity(kid, { kind: "screen-time", text: `Asked for ${minutes} min of screen time` });
   pushEvent(doc, {
     type: "screen_time.requested",
@@ -415,7 +454,8 @@ export function requestScreenTime(doc: DbDoc, kid: KidRecord): number {
 export function resolveScreenTime(doc: DbDoc, kid: KidRecord, action: "approve" | "decline" | "grant", minutes?: number): number {
   let amount = 0;
   if (action === "approve") {
-    amount = kid.requestedMinutes;
+    amount = Math.min(kid.requestedMinutes, kid.points);
+    kid.points = Math.max(0, kid.points - amount);
     kid.approvedMinutes += amount;
     kid.requestedMinutes = 0;
     if (amount > 0) addActivity(kid, { kind: "screen-time", text: `Screen time approved: ${amount} min` });
@@ -428,12 +468,14 @@ export function resolveScreenTime(doc: DbDoc, kid: KidRecord, action: "approve" 
   } else if (action === "decline") {
     amount = kid.requestedMinutes;
     kid.requestedMinutes = 0;
-    addActivity(kid, { kind: "screen-time", text: "Screen time request sent back" });
+    // Points were never taken out of the wallet. The child can submit the same
+    // amount again (or use any additional points earned while it was pending).
+    addActivity(kid, { kind: "screen-time", text: `Screen time request sent back: ${amount} min remain in points` });
     pushEvent(doc, {
       type: "screen_time.declined",
       parentId: kid.parentId,
       kidId: kid.id,
-      payload: { kidName: kid.name, minutes: amount },
+      payload: { kidName: kid.name, minutes: amount, pointsAvailable: kid.points },
     });
   } else {
     amount = Math.max(0, Math.min(120, Math.round(minutes ?? 0)));
@@ -474,10 +516,10 @@ export type LevelOutcome = {
  * answer already given there, so an unfinished level carries on from where it
  * stopped — that is the “resume” a child gets by tapping a level again.
  *
- * `restart` clears the answers of that one level, so its questions come round
- * again from the first one. Points, screen time and the wallet are untouched:
- * only this level's place in the bank is reset, and a note goes into the
- * behavioural log so a parent can see a level was started over.
+ * `restart` clears the answered progress for that one level and discards its
+ * active item; lifetime question history is kept so the new run gets fresh
+ * questions. Points, screen time and the wallet are untouched, and a note goes
+ * into the behavioural log so a parent can see a level was started over.
  *
  * Nothing here can be refused for being “too high” — that is the point.
  */
@@ -488,6 +530,11 @@ export function openLevel(doc: DbDoc, kid: KidRecord, level: Level, action: Leve
   if (action === "restart") {
     cleared = (kid.usedByLevel[key] ?? []).length;
     kid.usedByLevel = { ...kid.usedByLevel, [key]: [] };
+    // The active item has already been shown, so discard it but keep its ID in
+    // lifetime history. The next request will generate a different question.
+    const activeQuestions = { ...kid.activeQuestionsByLevel };
+    delete activeQuestions[key];
+    kid.activeQuestionsByLevel = activeQuestions;
   }
   kid.level = level;
   touchKid(kid, true);

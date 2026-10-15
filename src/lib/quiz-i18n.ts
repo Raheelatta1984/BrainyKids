@@ -1,15 +1,16 @@
 // Quiz questions and tasks in every language a family can choose.
 //
 // How it works:
-//  * a question is *shown* in the family's master language,
-//  * the answer is still *marked* on the server against the English original, so
+//  * a question is shown in the selected quiz language (with an optional
+//    app-language translation beneath it),
+//  * the answer is still marked on the server against the canonical original, so
 //    the client maps the choice a child tapped back to its English wording
 //    (`localiseQuestion()` returns both lists, in the same order).
 //
 // Anything without a translation falls back to English, so a language pack can
 // never break a quiz.
 
-import type { Question } from "./quiz-data";
+import type { Question, QuestionTemplateKey } from "./quiz-data";
 import type { LocaleCode } from "./types";
 
 export type QuestionI18n = {
@@ -18,6 +19,132 @@ export type QuestionI18n = {
   choices?: string[];
   explain: string;
 };
+
+type GeneratedWords = {
+  puzzle: string;
+  answer: string;
+  tasks: Record<QuestionTemplateKey, string>;
+  sides: string;
+  of: string;
+};
+
+/** Concise labels keep fresh maths and exam questions readable in every app language. */
+const GENERATED_WORDS: Partial<Record<LocaleCode, GeneratedWords>> = {
+  es: { puzzle: "Reto", answer: "Resultado", sides: "lados", of: "de", tasks: {
+    addition: "Calcula", subtraction: "Calcula", multiplication: "Multiplica", division: "Divide", sequence: "¿Qué sigue?", shape: "Lados de", perimeter: "Perímetro del rectángulo", area: "Área del rectángulo", fraction: "Halla el numerador", percentage: "Porcentaje", ratio: "Escala la razón", average: "Media", spelling: "Ortografía estándar en", money: "Coste total", "linear-equation": "Resuelve", quadratic: "Halla la otra raíz", gradient: "Halla la pendiente", pythagoras: "Halla la hipotenusa", "ohms-law": "Halla el voltaje", "molar-mass": "Halla la masa", differentiate: "Deriva", integrate: "Integra", logarithm: "Evalúa", kinematics: "Halla la velocidad final", probability: "Probabilidad",
+  } },
+  fr: { puzzle: "Défi", answer: "Résultat", sides: "côtés", of: "de", tasks: {
+    addition: "Calcule", subtraction: "Calcule", multiplication: "Multiplie", division: "Divise", sequence: "Quel nombre suit ?", shape: "Nombre de côtés du", perimeter: "Périmètre du rectangle", area: "Aire du rectangle", fraction: "Trouve le numérateur", percentage: "Pourcentage", ratio: "Multiplie le rapport", average: "Moyenne", spelling: "Orthographe standard en", money: "Coût total", "linear-equation": "Résous", quadratic: "Trouve l'autre racine", gradient: "Trouve la pente", pythagoras: "Trouve l'hypoténuse", "ohms-law": "Trouve la tension", "molar-mass": "Trouve la masse", differentiate: "Dérive", integrate: "Intègre", logarithm: "Calcule", kinematics: "Trouve la vitesse finale", probability: "Probabilité",
+  } },
+  ar: { puzzle: "لغز", answer: "الناتج", sides: "أضلاع", of: "من", tasks: {
+    addition: "احسب", subtraction: "احسب", multiplication: "اضرب", division: "اقسم", sequence: "ما العدد التالي؟", shape: "عدد أضلاع", perimeter: "محيط المستطيل", area: "مساحة المستطيل", fraction: "أوجد البسط", percentage: "النسبة المئوية", ratio: "كبّر النسبة", average: "المتوسط", spelling: "التهجئة القياسية في", money: "التكلفة الكلية", "linear-equation": "حل", quadratic: "أوجد الجذر الآخر", gradient: "أوجد الميل", pythagoras: "أوجد الوتر", "ohms-law": "أوجد الجهد", "molar-mass": "أوجد الكتلة", differentiate: "اشتق", integrate: "كامل", logarithm: "احسب", kinematics: "أوجد السرعة النهائية", probability: "الاحتمال",
+  } },
+  ur: { puzzle: "پہیلی", answer: "جواب", sides: "ضلع", of: "کا", tasks: {
+    addition: "جمع کریں", subtraction: "تفریق کریں", multiplication: "ضرب دیں", division: "تقسیم کریں", sequence: "اگلا عدد؟", shape: "کے اضلاع", perimeter: "مستطیل کا محیط", area: "مستطیل کا رقبہ", fraction: "نیا شمارندہ معلوم کریں", percentage: "فیصد معلوم کریں", ratio: "تناسب کو بڑھائیں", average: "اوسط", spelling: "معیاری ہجے", money: "کل قیمت", "linear-equation": "حل کریں", quadratic: "دوسری جذر معلوم کریں", gradient: "ڈھلوان معلوم کریں", pythagoras: "وتر معلوم کریں", "ohms-law": "وولٹیج معلوم کریں", "molar-mass": "کمیت معلوم کریں", differentiate: "تفریق کریں", integrate: "تکمل کریں", logarithm: "قیمت معلوم کریں", kinematics: "آخری رفتار معلوم کریں", probability: "احتمال",
+  } },
+  hi: { puzzle: "पहेली", answer: "उत्तर", sides: "भुजाएँ", of: "का", tasks: {
+    addition: "जोड़ें", subtraction: "घटाएँ", multiplication: "गुणा करें", division: "भाग दें", sequence: "अगली संख्या", shape: "की भुजाएँ", perimeter: "आयत का परिमाप", area: "आयत का क्षेत्रफल", fraction: "नया अंश निकालें", percentage: "प्रतिशत निकालें", ratio: "अनुपात को बढ़ाएँ", average: "माध्य निकालें", spelling: "सही वर्तनी", money: "कुल कीमत", "linear-equation": "हल करें", quadratic: "दूसरी जड़ निकालें", gradient: "ढाल निकालें", pythagoras: "कर्ण निकालें", "ohms-law": "वोल्टेज निकालें", "molar-mass": "द्रव्यमान निकालें", differentiate: "अवकलन करें", integrate: "समाकलन करें", logarithm: "मान निकालें", kinematics: "अंतिम वेग निकालें", probability: "प्रायिकता निकालें",
+  } },
+  zh: { puzzle: "题目", answer: "答案", sides: "条边", of: "的", tasks: {
+    addition: "计算", subtraction: "计算", multiplication: "计算乘积", division: "计算商", sequence: "下一个数是什么？", shape: "边数：", perimeter: "矩形周长", area: "矩形面积", fraction: "求新分子", percentage: "求百分比", ratio: "按比例扩大", average: "求平均数", spelling: "标准拼写（", money: "总价", "linear-equation": "解方程", quadratic: "求另一个根", gradient: "求斜率", pythagoras: "求斜边", "ohms-law": "求电压", "molar-mass": "求质量", differentiate: "求导", integrate: "积分", logarithm: "求值", kinematics: "求末速度", probability: "求概率",
+  } },
+};
+
+const CURRENCY_WORDS: Partial<Record<LocaleCode, Record<string, string>>> = {
+  es: { AU: "dólares australianos", GB: "libras", US: "dólares estadounidenses", IN: "rupias", PK: "rupias", EU: "euros", NZ: "dólares neozelandeses" },
+  fr: { AU: "dollars australiens", GB: "livres", US: "dollars américains", IN: "roupies", PK: "roupies", EU: "euros", NZ: "dollars néo-zélandais" },
+  ar: { AU: "دولارات أسترالية", GB: "جنيهات", US: "دولارات أمريكية", IN: "روبيات", PK: "روبيات", EU: "يورو", NZ: "دولارات نيوزيلندية" },
+  ur: { AU: "آسٹریلوی ڈالر", GB: "پاؤنڈ", US: "امریکی ڈالر", IN: "روپے", PK: "روپے", EU: "یورو", NZ: "نیوزی لینڈ ڈالر" },
+  hi: { AU: "ऑस्ट्रेलियाई डॉलर", GB: "पाउंड", US: "अमेरिकी डॉलर", IN: "रुपये", PK: "रुपये", EU: "यूरो", NZ: "न्यूज़ीलैंड डॉलर" },
+  zh: { AU: "澳元", GB: "英镑", US: "美元", IN: "印度卢比", PK: "巴基斯坦卢比", EU: "欧元", NZ: "新西兰元" },
+};
+
+const COUNTRY_WORDS: Partial<Record<LocaleCode, Record<string, string>>> = {
+  es: { AU: "Australia", GB: "Reino Unido", US: "Estados Unidos", IN: "India", PK: "Pakistán", EU: "Europa", NZ: "Nueva Zelanda" },
+  fr: { AU: "Australie", GB: "Royaume-Uni", US: "États-Unis", IN: "Inde", PK: "Pakistan", EU: "Europe", NZ: "Nouvelle-Zélande" },
+  ar: { AU: "أستراليا", GB: "المملكة المتحدة", US: "الولايات المتحدة", IN: "الهند", PK: "باكستان", EU: "أوروبا", NZ: "نيوزيلندا" },
+  ur: { AU: "آسٹریلیا", GB: "برطانیہ", US: "امریکہ", IN: "بھارت", PK: "پاکستان", EU: "یورپ", NZ: "نیوزی لینڈ" },
+  hi: { AU: "ऑस्ट्रेलिया", GB: "यूनाइटेड किंगडम", US: "संयुक्त राज्य", IN: "भारत", PK: "पाकिस्तान", EU: "यूरोप", NZ: "न्यूज़ीलैंड" },
+  zh: { AU: "澳大利亚", GB: "英国", US: "美国", IN: "印度", PK: "巴基斯坦", EU: "欧洲", NZ: "新西兰" },
+};
+
+const SHAPE_WORDS: Partial<Record<LocaleCode, Record<string, string>>> = {
+  es: { triangle: "triángulo", square: "cuadrado", pentagon: "pentágono", hexagon: "hexágono" },
+  fr: { triangle: "triangle", square: "carré", pentagon: "pentagone", hexagon: "hexagone" },
+  ar: { triangle: "مثلث", square: "مربع", pentagon: "خماسي الأضلاع", hexagon: "سداسي الأضلاع" },
+  ur: { triangle: "مثلث", square: "مربع", pentagon: "پانچ ضلعی", hexagon: "چھ ضلعی" },
+  hi: { triangle: "त्रिभुज", square: "वर्ग", pentagon: "पंचभुज", hexagon: "षट्भुज" },
+  zh: { triangle: "三角形", square: "正方形", pentagon: "五边形", hexagon: "六边形" },
+};
+
+function translatedUnit(unit: string, locale: LocaleCode): string {
+  const words: Partial<Record<LocaleCode, Record<string, string>>> = {
+    es: { cm: "cm", in: "pulgadas", "square inches": "pulgadas cuadradas", "square centimetres": "cm²" },
+    fr: { cm: "cm", in: "pouces", "square inches": "pouces carrés", "square centimetres": "cm²" },
+    ar: { cm: "سم", in: "بوصة", "square inches": "بوصة مربعة", "square centimetres": "سم²" },
+    ur: { cm: "سینٹی میٹر", in: "انچ", "square inches": "مربع انچ", "square centimetres": "مربع سینٹی میٹر" },
+    hi: { cm: "सेमी", in: "इंच", "square inches": "वर्ग इंच", "square centimetres": "वर्ग सेमी" },
+    zh: { cm: "厘米", in: "英寸", "square inches": "平方英寸", "square centimetres": "平方厘米" },
+  };
+  return words[locale]?.[unit] ?? unit;
+}
+
+function value(values: Record<string, string | number>, key: string): string {
+  return String(values[key] ?? "");
+}
+
+function translatedGeneratedContent(question: Question, locale: LocaleCode): QuestionI18n | undefined {
+  const key = question.templateKey;
+  const words = GENERATED_WORDS[locale];
+  if (!key || !words) return undefined;
+  const values = { ...(question.templateValues ?? {}) };
+  const countryCode = value(values, "country");
+  if (values.currency) values.currency = CURRENCY_WORDS[locale]?.[countryCode] ?? values.currency;
+  if (values.country) values.country = COUNTRY_WORDS[locale]?.[countryCode] ?? values.country;
+  if (values.unit) values.unit = translatedUnit(String(values.unit), locale);
+  if (values.shape) values.shape = SHAPE_WORDS[locale]?.[String(values.shape)] ?? values.shape;
+
+  const n = value(values, "n");
+  const a = value(values, "a");
+  const b = value(values, "b");
+  const c = value(values, "c");
+  const d = value(values, "d");
+  const answer = value(values, "answer");
+  const task = words.tasks[key];
+  let body = "";
+  let explain = "";
+  switch (key) {
+    case "addition": body = `${a} + ${b} = ?`; explain = `${a} + ${b} = ${answer}.`; break;
+    case "subtraction": body = `${a} − ${b} = ?`; explain = `${a} − ${b} = ${answer}.`; break;
+    case "multiplication": body = `${a} × ${b} = ?`; explain = `${a} × ${b} = ${answer}.`; break;
+    case "division": body = `${a} ÷ ${b} = ?`; explain = `${a} ÷ ${b} = ${answer}.`; break;
+    case "sequence": body = `${a}, ${b}, ${c}, ___?`; explain = `${value(values, "step")} → ${answer}.`; break;
+    case "shape": body = `${value(values, "shape")}?`; explain = `${answer} ${words.sides}.`; break;
+    case "perimeter": body = `${a} × ${b} ${value(values, "unit")}?`; explain = `2 × (${a} + ${b}) = ${answer}.`; break;
+    case "area": body = `${a} × ${b} ${value(values, "unit")}?`; explain = `${a} × ${b} = ${answer} ${value(values, "unit")}.`; break;
+    case "fraction": body = `${a}/${b} = ?/${c}`; explain = `${a}/${b} = ${answer}/${c}.`; break;
+    case "percentage": body = `${a}% × ${b} = ?`; explain = `${a}% × ${b} = ${answer}.`; break;
+    case "ratio": body = `${a}:${b} × ${c}`; explain = `${b} × ${c} = ${answer}.`; break;
+    case "average": body = `${a}, ${b}, ${c}`; explain = `(${a} + ${b} + ${c}) ÷ 3 = ${answer}.`; break;
+    case "spelling": body = `${value(values, "country")}: “${a}” / “${b}”?`; explain = `${value(values, "country")}: “${answer}”.`; break;
+    case "money": body = `${b} × ${a} ${value(values, "currencyShort")}?`; explain = `${a} × ${b} = ${answer} ${value(values, "currency")}.`; break;
+    case "linear-equation": body = `${a}x + ${b} = ${c}`; explain = `x = ${answer}.`; break;
+    case "quadratic": body = `x² − ${a}x + ${b} = 0; root ${c}`; explain = `Other root = ${answer}.`; break;
+    case "gradient": body = `(${a}, ${b}) → (${c}, ${d})`; explain = `Gradient = ${answer}.`; break;
+    case "pythagoras": body = `${a}, ${b}`; explain = `Hypotenuse = ${answer}.`; break;
+    case "ohms-law": body = `${b} A × ${a} Ω`; explain = `V = ${b} × ${a} = ${answer} V.`; break;
+    case "molar-mass": body = `${a} mol × ${b} g/mol`; explain = `Mass = ${a} × ${b} = ${answer} g.`; break;
+    case "differentiate": body = `${a}x^${b}`; explain = `f′(x) = ${answer}.`; break;
+    case "integrate": body = `${a}x^${b} dx`; explain = `∫ ${a}x^${b} dx = ${answer}.`; break;
+    case "logarithm": body = `log${a}(${a}^${b})`; explain = `= ${answer}.`; break;
+    case "kinematics": body = `${a} + ${b} × ${c}`; explain = `v = u + at = ${answer} m/s.`; break;
+    case "probability": body = `${a}/${b}`; explain = `Probability = ${answer}.`; break;
+  }
+  return {
+    question: `${words.puzzle} ${n}: ${task} ${body}`,
+    explain: `${words.answer}: ${explain}`,
+  };
+}
 
 export const TOPIC_I18N: Partial<Record<LocaleCode, Record<string, string>>> = {
   es: {
@@ -423,7 +550,9 @@ export function topicFor(topic: string, locale: LocaleCode | string | undefined 
 }
 
 export function localiseQuestion(question: Question, locale: LocaleCode | string | undefined | null): LocalisedQuestion {
-  const pack = locale && locale !== "en" ? QUESTION_I18N[locale as LocaleCode]?.[question.id] : undefined;
+  const code = locale as LocaleCode | undefined;
+  const staticPack = locale && locale !== "en" ? QUESTION_I18N[code as LocaleCode]?.[question.id] : undefined;
+  const pack = staticPack ?? (code ? translatedGeneratedContent(question, code) : undefined);
   const choices = pack?.choices && pack.choices.length === question.choices.length ? pack.choices : question.choices;
   return {
     id: question.id,

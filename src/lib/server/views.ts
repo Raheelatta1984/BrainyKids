@@ -1,5 +1,6 @@
 import { isOnline, type ActivityEntry, type ChatMessage, type FamilySettings, type KidView, type LeaderboardEntry, type PairingView, type ParentAccount, type RewardLedgerEntry } from "@/lib/types";
 import { dayKey, resolveSettings } from "@/lib/settings";
+import { educationGradeCountry } from "@/lib/curriculum";
 import { MAX_ACTIVITY } from "./constants";
 import type { ChatRecord, DbDoc, KidRecord, PairingRecord, ParentRecord } from "./store";
 
@@ -15,6 +16,19 @@ export function parentView(parent: ParentRecord): ParentAccount {
 export function settingsForParent(doc: DbDoc, parentId: string | null | undefined): FamilySettings {
   if (!parentId) return resolveSettings(null);
   return resolveSettings(doc.settings?.[parentId] ?? null);
+}
+
+/** Family master settings merged with the optional learning-profile overrides for one child. */
+export function settingsForKid(doc: DbDoc, kid: KidRecord): FamilySettings {
+  const master = settingsForParent(doc, kid.parentId);
+  const curriculumCountry = kid.curriculumCountry ?? master.curriculumCountry;
+  const educationStage = kid.educationStage ?? master.educationStage;
+  const gradeCountry = educationGradeCountry(educationStage);
+  return resolveSettings({
+    ...master,
+    curriculumCountry,
+    educationStage: gradeCountry && gradeCountry !== curriculumCountry ? "auto" : educationStage,
+  });
 }
 
 export function chatView(record: ChatRecord): ChatMessage {
@@ -113,6 +127,8 @@ export function kidView(doc: DbDoc, kid: KidRecord, now = Date.now(), viewer: "p
     username: kid.username,
     age: kid.age,
     gender: kid.gender,
+    curriculumCountry: kid.curriculumCountry ?? null,
+    educationStage: kid.educationStage ?? null,
     theme: kid.theme,
     level: kid.level,
     unlockedLevel: kid.unlockedLevel,

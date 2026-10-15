@@ -11,6 +11,7 @@ import {
   otherCurrencyOptions,
 } from "@/lib/rewards";
 import { questionsTranslated } from "@/lib/quiz-i18n";
+import { CURRICULUM_COUNTRIES, educationGradeCountry, educationStagesForCountry, curriculumCountryInfo } from "@/lib/curriculum";
 import { actions } from "@/lib/client/api";
 import { reportBehaviour } from "@/lib/client/diagnostics";
 import type { DateFormat, FamilySettings, TimeFormat } from "@/lib/types";
@@ -68,7 +69,10 @@ export default function FamilySettingsCard({
   }, []);
   const preview = useMemo(() => (sampleAt ? formatStamp(sampleAt, draft) : "…"), [sampleAt, draft]);
   const localZone = deviceTimeZone();
-  const translated = questionsTranslated(draft.locale);
+  const questionLocale = draft.questionLanguage === "same" ? draft.locale : draft.questionLanguage;
+  const translated = questionsTranslated(questionLocale);
+  const selectedCurriculum = curriculumCountryInfo(draft.curriculumCountry);
+  const educationStages = educationStagesForCountry(draft.curriculumCountry);
 
   function update<K extends keyof FamilySettings>(key: K, value: FamilySettings[K]) {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -96,8 +100,8 @@ export default function FamilySettingsCard({
     <section className="card settings-card">
       <h2>Master settings</h2>
       <p className="muted">
-        Date, time, language and voice over for the whole family. The behavioural log, chat and every quiz question
-        follow these settings — including the language children are asked questions in.
+        Family-wide settings for dates, language, curriculum and voice. Choose the education system independently of
+        where your family lives, then optionally override it for an individual child.
       </p>
 
       <form className="settings-form" onSubmit={save}>
@@ -114,7 +118,7 @@ export default function FamilySettingsCard({
         </label>
 
         <label>
-          Language
+          App language
           <select value={draft.locale} onChange={(event) => update("locale", event.target.value as FamilySettings["locale"])}>
             {LOCALES.map((locale) => (
               <option key={locale.code} value={locale.code}>
@@ -123,6 +127,80 @@ export default function FamilySettingsCard({
             ))}
           </select>
         </label>
+
+        <fieldset className="settings-group">
+          <legend>🌍 Learning language &amp; curriculum</legend>
+          <p className="muted small">
+            The family&apos;s home country does not have to match the curriculum your children practise. New questions are
+            generated for each level and stay unique across levels and restarts. Age chooses a suitable stage unless
+            you select an exam stage such as O-Level or A-Level.
+          </p>
+          <label>
+            Question language
+            <select
+              value={draft.questionLanguage}
+              onChange={(event) => update("questionLanguage", event.target.value as FamilySettings["questionLanguage"])}
+            >
+              <option value="same">Follow app language ({LOCALES.find((item) => item.code === draft.locale)?.label ?? "English"})</option>
+              {LOCALES.map((locale) => (
+                <option key={locale.code} value={locale.code}>
+                  {locale.label} · {locale.native}
+                </option>
+              ))}
+            </select>
+          </label>
+          {questionLocale !== draft.locale && (
+            <label className="inline">
+              <input
+                type="checkbox"
+                checked={draft.showQuestionTranslation}
+                onChange={(event) => update("showQuestionTranslation", event.target.checked)}
+              />
+              Show a translation in the app language under each question
+            </label>
+          )}
+          <label>
+            Default curriculum country
+            <select
+              value={draft.curriculumCountry}
+              onChange={(event) => {
+                const country = event.target.value as FamilySettings["curriculumCountry"];
+                setDraft((current) => ({
+                  ...current,
+                  curriculumCountry: country,
+                  educationStage:
+                    educationGradeCountry(current.educationStage) && educationGradeCountry(current.educationStage) !== country
+                      ? "auto"
+                      : current.educationStage,
+                }));
+                setMessage("");
+              }}
+            >
+              {CURRICULUM_COUNTRIES.map((country) => (
+                <option key={country.code} value={country.code}>
+                  {country.label} · {country.curriculum}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Default grade / education stage
+            <select
+              value={draft.educationStage}
+              onChange={(event) => update("educationStage", event.target.value as FamilySettings["educationStage"])}
+            >
+              {educationStages.map((stage) => (
+                <option key={stage.value} value={stage.value}>
+                  {stage.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="muted small">
+            Current master profile: <strong>{selectedCurriculum.label}</strong> · {selectedCurriculum.curriculum} ·{" "}
+            {educationStages.find((stage) => stage.value === draft.educationStage)?.description}
+          </p>
+        </fieldset>
 
         <label>
           Date format

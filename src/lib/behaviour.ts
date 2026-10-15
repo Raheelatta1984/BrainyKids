@@ -305,8 +305,8 @@ export const BEHAVIOUR: Record<string, BehaviourTemplate> = {
   "quiz.screen_time_requested": {
     area: "quiz",
     severity: "info",
-    layman: "{kidName} asked for {minutes} minutes of screen time.",
-    technical: "screen time requested: kidId={kidId} minutes={minutes} pointsSpent={minutes}",
+    layman: "{kidName} asked for {minutes} minutes of screen time; their points remain available until a parent approves.",
+    technical: "screen time requested: kidId={kidId} minutes={minutes} pointsAvailable={pointsAvailable}",
     fix: "Nothing to do; approve or send it back from the dashboard.",
   },
   "quiz.timed_out": {
