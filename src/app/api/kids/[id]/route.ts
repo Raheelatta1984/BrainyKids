@@ -52,7 +52,7 @@ export const PATCH = route(async (req: NextRequest, ctx: Ctx) => {
     }
     if (typeof body.unlockedLevel !== "undefined") {
       const unlocked = num(body.unlockedLevel, kid.unlockedLevel);
-      if (unlocked >= 1 && unlocked <= 3 && unlocked >= kid.level) kid.unlockedLevel = unlocked as Level;
+      if (unlocked >= 1 && unlocked <= 999 && unlocked >= kid.level) kid.unlockedLevel = unlocked as Level;
     }
 
     pushEvent(doc, {

@@ -401,6 +401,7 @@ export const QUESTION_I18N: Partial<Record<LocaleCode, Record<string, QuestionI1
 export type LocalisedQuestion = {
   id: string;
   level: 1 | 2 | 3;
+  track: Question["track"];
   topic: string;
   question: string;
   visual: string;
@@ -427,6 +428,7 @@ export function localiseQuestion(question: Question, locale: LocaleCode | string
   return {
     id: question.id,
     level: question.level,
+    track: question.track,
     topic: topicFor(question.topic, locale),
     question: pack?.question ?? question.question,
     visual: question.visual,

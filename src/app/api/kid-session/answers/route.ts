@@ -21,12 +21,13 @@ export const POST = route(async (req: NextRequest) => {
   const picked = str(body.picked);
   const level = num(body.level, auth.kid.level);
   if (!questionId) return error("Missing question.");
-  if (level < 1 || level > 3) return error("Unknown level.");
+  if (level < 1 || level > 999) return error("Unknown level.");
+  const elapsedSeconds = num(body.elapsedSeconds, 0);
 
   const outcome = await store.mutate((doc) => {
     const kid = doc.kids.find((k) => k.id === auth.kid.id);
     if (!kid) return null;
-    return recordAnswer(doc, kid, questionId, picked, level as Level);
+    return recordAnswer(doc, kid, questionId, picked, level as Level, { elapsedSeconds });
   });
 
   if (!outcome) return error("That question is not part of this level.", 400);

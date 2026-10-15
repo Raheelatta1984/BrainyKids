@@ -4,7 +4,9 @@ import { useCallback, useState } from "react";
 import { actions, type Live } from "@/lib/client/api";
 import { reportBehaviour } from "@/lib/client/diagnostics";
 import { useToasts, type ToastItem } from "@/lib/client/useToasts";
-import { THEMES } from "@/components/KidApp";
+import { Leaderboard, THEMES } from "@/components/KidApp";
+import { formatReward } from "@/lib/rewards";
+import { levelTitle } from "@/lib/quiz-logic";
 import BehaviourLogCard from "@/components/BehaviourLogCard";
 import ChatPanel from "@/components/ChatPanel";
 import FamilySettingsCard from "@/components/FamilySettingsCard";
@@ -16,6 +18,7 @@ import type {
   FamilySettings,
   Gender,
   KidView,
+  LeaderboardEntry,
   LiveEvent,
   PairingView,
   ParentAccount,
@@ -28,6 +31,7 @@ const CHEERS = ["Great work! 🎉", "Keep going! 💪", "So proud of you! ❤️
 export default function ParentDashboard({
   parent,
   kids,
+  leaderboard = [],
   pairings,
   passkeys,
   settings,
@@ -39,6 +43,7 @@ export default function ParentDashboard({
 }: {
   parent: ParentAccount;
   kids: KidView[];
+  leaderboard?: LeaderboardEntry[];
   pairings: PairingView[];
   passkeys: PasskeyView[];
   settings: FamilySettings;
@@ -56,7 +61,7 @@ export default function ParentDashboard({
   // Alerts about what children are doing, delivered live from the server.
   const toasts = useToasts(live.events, useCallback((event) => toastForParent(event), []), 8000);
 
-  const waiting = kids.reduce((sum, kid) => sum + (kid.requestedMinutes > 0 ? 1 : 0), 0);
+  const waiting = kids.reduce((sum, kid) => sum + (kid.requestedMinutes > 0 ? 1 : 0) + (kid.requestedRewardMinor > 0 ? 1 : 0), 0);
   const onlineDevices = kids.reduce((sum, kid) => sum + kid.devices.filter((d) => d.online).length, 0);
   const unreadChat = kids.reduce((sum, kid) => sum + kid.chatUnread, 0);
 
@@ -128,6 +133,13 @@ export default function ParentDashboard({
         </div>
       </section>
 
+      {leaderboard.length > 0 && (
+        <section className="card">
+          <Leaderboard entries={leaderboard} settings={settings} />
+          <p className="muted small">Ranked by level first — finishing a level always unlocks the next one, so levels keep growing (Level 8 and beyond).</p>
+        </section>
+      )}
+
       <LinkDeviceCard kids={kids} pairings={pairings} live={live} settings={settings} />
       <AddChildCard onDone={() => void live.refresh()} />
 
@@ -180,6 +192,13 @@ function toastForParent(event: LiveEvent): ToastItem | null {
     code?: string;
   };
   switch (event.type) {
+    case "reward.requested":
+      return {
+        id: event.id,
+        emoji: "💰",
+        title: `${payload.kidName} asked to realise their wallet`,
+        body: "Approve or send it back in the child's card below",
+      };
     case "screen_time.requested":
       return {
         id: event.id,
@@ -571,11 +590,33 @@ function KidCard({
       <dl className="stats">
         <div>
           <dt>Level</dt>
-          <dd>{kid.level}</dd>
+          <dd>
+            {kid.level} · {levelTitle(kid.level)}
+          </dd>
         </div>
         <div>
           <dt>Unlocked</dt>
-          <dd>Level {kid.unlockedLevel}</dd>
+          <dd>
+            Level {kid.unlockedLevel} · {levelTitle(kid.unlockedLevel)}
+          </dd>
+        </div>
+        <div>
+          <dt>Wallet</dt>
+          <dd>💰 {formatReward(kid.walletBalanceMinor, settings.rewardKind, settings.currency)}</dd>
+        </div>
+        <div>
+          <dt>Earned today / week</dt>
+          <dd>
+            {formatReward(kid.earnedTodayMinor, settings.rewardKind, settings.currency)} /{" "}
+            {formatReward(kid.earnedThisWeekMinor, settings.rewardKind, settings.currency)}
+          </dd>
+        </div>
+        <div>
+          <dt>Lifetime / realised</dt>
+          <dd>
+            {formatReward(kid.lifetimeEarnedMinor, settings.rewardKind, settings.currency)} /{" "}
+            {formatReward(kid.totalRealisedMinor, settings.rewardKind, settings.currency)}
+          </dd>
         </div>
         <div>
           <dt>Answered</dt>
@@ -594,6 +635,55 @@ function KidCard({
           <dd>{kid.approvedMinutes}</dd>
         </div>
       </dl>
+
+      <div className="approve">
+        <span>
+          💰 Realise requested: <strong>{formatReward(kid.requestedRewardMinor, settings.rewardKind, settings.currency)}</strong>
+          <span className="muted"> — approving pays it out and resets the wallet to zero; sending it back keeps the balance.</span>
+        </span>
+        <div className="row gap">
+          <button
+            className="primary"
+            disabled={kid.requestedRewardMinor === 0 || busy}
+            onClick={() => void run(() => actions.rewardDecision(kid.id, "approve"))}
+          >
+            Approve {formatReward(kid.requestedRewardMinor, settings.rewardKind, settings.currency)} &amp; reset wallet
+          </button>
+          <button
+            className="ghost"
+            disabled={kid.requestedRewardMinor === 0 || busy}
+            onClick={() => void run(() => actions.rewardDecision(kid.id, "decline"))}
+          >
+            Send back
+          </button>
+        </div>
+      </div>
+
+      {kid.rewardLedger.length > 0 && (
+        <div className="activity">
+          <h3>💰 Wallet transactions</h3>
+          <ul>
+            {kid.rewardLedger.slice(0, 10).map((entry) => (
+              <li key={entry.id}>
+                <span className="activity-icon">{entry.type === "earned" ? "🪙" : entry.type === "realise_approved" ? "✅" : entry.type === "realise_declined" ? "↩️" : "🙋"}</span>
+                <span>
+                  {entry.type === "earned"
+                    ? `Earned ${formatReward(entry.amountMinor, entry.kind, entry.currency)}${entry.topic ? ` · ${entry.topic}` : ""}${typeof entry.scorePercent === "number" ? ` · ${entry.scorePercent}%` : ""}`
+                    : entry.type === "realise_requested"
+                      ? `Asked to realise ${formatReward(entry.amountMinor, entry.kind, entry.currency)}`
+                      : entry.type === "realise_approved"
+                        ? `Realised ${formatReward(entry.amountMinor, entry.kind, entry.currency)} — wallet reset`
+                        : `Realise of ${formatReward(entry.amountMinor, entry.kind, entry.currency)} sent back`}
+                  <small className="muted"> · balance {formatReward(entry.balanceAfterMinor, entry.kind, entry.currency)}</small>
+                </span>
+                <small className="muted" title={formatStamp(entry.at, settings)}>
+                  {formatTimeAgo(entry.at, settings)}
+                </small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="approve">
         <span>
@@ -697,7 +787,7 @@ function KidCard({
           {kid.activity.slice(0, 8).map((entry) => (
             <li key={entry.id} className={entry.kind}>
               <span className="activity-icon">
-                {entry.kind === "answer" ? (entry.correct ? "✅" : "➖") : entry.kind === "cheer" ? "💬" : entry.kind === "device" ? "📱" : entry.kind === "level" ? "🏅" : "⏱️"}
+                {entry.kind === "answer" ? (entry.correct ? "✅" : "➖") : entry.kind === "cheer" ? "💬" : entry.kind === "device" ? "📱" : entry.kind === "level" ? "🏅" : entry.kind === "reward" ? "💰" : "⏱️"}
               </span>
               <span>{entry.text}</span>
               <small className="muted" title={formatStamp(entry.at, settings)}>

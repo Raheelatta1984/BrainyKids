@@ -2,9 +2,16 @@
 
 export type Gender = "boy" | "girl" | "prefer-not-to-say";
 export type Theme = "space" | "jungle" | "robots" | "dinos";
-export type Level = 1 | 2 | 3;
+/**
+ * A child's progression level. Levels never stop: finishing a level always
+ * unlocks the next one (Level 4, 5, … 8 and beyond). The question bank's
+ * difficulty tiers (1–3, see `Question.level`) are mapped onto progression
+ * levels by `tierForLevel` in quiz-logic.ts.
+ */
+export type Level = number;
 
-export const LEVELS: Level[] = [1, 2, 3];
+/** Difficulty tier of a bank question (1 = easiest … 3 = hardest). */
+export type QuestionTier = 1 | 2 | 3;
 
 /** Languages a family can pick as their master language (app text, questions and voice). */
 export type LocaleCode = "en" | "es" | "fr" | "ar" | "ur" | "hi" | "zh";
@@ -30,6 +37,59 @@ export type FamilySettings = {
   parentVoiceOver: boolean;
   /** Kids can send a message by speaking instead of typing. */
   kidDictation: boolean;
+  // ---- Rewards (money / Robux instead of big abstract points) ----
+  /** Earn real local currency, or Robux. Chosen by the parent. */
+  rewardKind: "money" | "robux";
+  /** ISO currency code (AUD, USD, …) used when rewardKind is "money". */
+  currency: string;
+  /** Reward for a 100% answer, in cents (or whole Robux), e.g. 50 = A$0.50. Near answers earn a share (see rewards.ts). */
+  maxRewardPerQuestionMinor: number;
+  /** Most a child can earn per day / per week, in cents (or Robux). 0 = no limit. */
+  dailyEarnLimitMinor: number;
+  weeklyEarnLimitMinor: number;
+  /** When true, rewards are only earned on `earnDays` between the two times (family time zone). */
+  earnScheduleEnabled: boolean;
+  /** Weekdays earning is allowed, 0 = Sunday … 6 = Saturday. */
+  earnDays: number[];
+  earnStartTime: string;
+  earnEndTime: string;
+  // ---- Per-question timers (seconds, by difficulty; hard questions get the most, capped at 600) ----
+  timerEasySeconds: number;
+  timerMediumSeconds: number;
+  timerHardSeconds: number;
+};
+
+/** One wallet transaction: every cent/Robux earned, requested, approved or sent back. */
+export type RewardLedgerEntry = {
+  id: string;
+  kidId: string;
+  at: number;
+  type: "earned" | "realise_requested" | "realise_approved" | "realise_declined";
+  /** Amount in cents (or whole Robux). */
+  amountMinor: number;
+  kind: "money" | "robux";
+  currency: string;
+  /** Wallet balance right after this entry. */
+  balanceAfterMinor: number;
+  questionId?: string;
+  topic?: string;
+  level?: number;
+  /** How close the answer was, 0–100 (only for "earned"). */
+  scorePercent?: number;
+  note?: string;
+};
+
+/** One row of the family scoreboard: children ranked by level, then accuracy, then lifetime earnings. */
+export type LeaderboardEntry = {
+  kidId: string;
+  name: string;
+  level: number;
+  unlockedLevel: number;
+  correct: number;
+  attempted: number;
+  accuracy: number;
+  lifetimeEarnedMinor: number;
+  points: number;
 };
 
 export type ParentAccount = {
@@ -42,7 +102,7 @@ export type ParentAccount = {
 export type ActivityEntry = {
   id: string;
   at: number;
-  kind: "answer" | "screen-time" | "cheer" | "device" | "level";
+  kind: "answer" | "screen-time" | "cheer" | "device" | "level" | "reward";
   text: string;
   correct?: boolean;
 };
@@ -162,6 +222,16 @@ export type KidView = {
   correct: number;
   requestedMinutes: number;
   approvedMinutes: number;
+  /** Spendable wallet balance, in cents (or whole Robux) — reset to 0 only when a parent approves a realise request. */
+  walletBalanceMinor: number;
+  /** Amount in a realise request waiting for a parent (0 = none waiting). */
+  requestedRewardMinor: number;
+  lifetimeEarnedMinor: number;
+  totalRealisedMinor: number;
+  earnedTodayMinor: number;
+  earnedThisWeekMinor: number;
+  /** Newest wallet transactions first. */
+  rewardLedger: RewardLedgerEntry[];
   createdAt: number;
   lastSeenAt: number | null;
   online: boolean;
@@ -233,6 +303,10 @@ export type LiveEventType =
   | "screen_time.declined"
   | "screen_time.granted"
   | "cheer.sent"
+  | "reward.earned"
+  | "reward.requested"
+  | "reward.approved"
+  | "reward.declined"
   | "chat.message"
   | "pairing.started"
   | "pairing.approved"
@@ -245,6 +319,7 @@ export type Snapshot =
       role: "parent";
       parent: ParentAccount;
       kids: KidView[];
+      leaderboard: LeaderboardEntry[];
       pairings: PairingView[];
       passkeys: PasskeyView[];
       settings: FamilySettings;
@@ -253,6 +328,7 @@ export type Snapshot =
   | {
       role: "kid";
       kid: KidView;
+      leaderboard: LeaderboardEntry[];
       parent: { name: string; email: string };
       settings: FamilySettings;
       storage?: StorageState;

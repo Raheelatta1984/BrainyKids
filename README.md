@@ -89,6 +89,41 @@ the parent's phone and the log all use the family's own date, time and language.
 Every behavioural log line records the settings that were in force when it was
 written, so a review can see the world as the family saw it.
 
+### Rewards: real money or Robux, per-question timers, endless levels
+
+Alongside screen time, children now earn **actual money in the family's local
+currency — or Robux** — for answering questions. All of it is set by the parent
+in **Master settings**:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| Earn | Real money | …or Robux (Roblox), if the family prefers that |
+| Currency | AUD | Australian dollar, US dollar, pound, euro, rupee and more (shown with real decimals, e.g. A$0.50 — amounts are stored as integer cents, never floats) |
+| Reward for a perfect answer | 50 (cents / Robux) | A 100% answer earns this in full |
+| Daily / weekly earn limit | A$2.00 / A$10.00 (0 = no limit) | Caps how much can be earned per day and per Mon–Sun week |
+| Earning schedule | Off | Optionally only earn on chosen weekdays between two times (family time zone) |
+| Question timers | Easy 120s · Medium 300s · Hard 600s | Every question counts down; harder questions get more time, never more than 10 minutes. Timing out earns nothing for that question |
+
+Rewards are **proportional to how close the answer is**, decided on the server:
+100% earns the full amount (50c), 90%+ earns 80% of it (40c of 50c), 75%+ earns
+50%, 50%+ earns 25%, and under 50% earns nothing. Numeric answers are scored by
+proximity, word answers by similarity, so a near miss still earns something.
+
+The money collects in the child's **wallet**. When the child taps *Ask a parent
+to realise…*, the request goes to the parent live. The wallet is **only reset
+to zero when a parent approves** (sending it back keeps the balance). Every
+step — each amount earned (with its question, topic, level and closeness %),
+each realise request, each approval and each send-back — is written to the
+child's **transaction log** on the dashboard and to the behavioural log
+(`reward.*`, `quiz.timed_out`). Parents pay the child outside the app; the app
+is the ledger, not a bank.
+
+**Levels never end.** Finishing a level always unlocks the next one — Level 4,
+5, … 8 and beyond (the bank's three difficulty tiers map onto them, so higher
+levels ask the hardest questions). Both the kid screen and the parent dashboard
+show a family **scoreboard** ranked by level, then accuracy, then lifetime
+earnings, so children can compete on “I'm on Level 8!”.
+
 ### Chat and voice over
 
 Each child card has a chat thread that both sides can use:
@@ -121,6 +156,8 @@ selective-style and NAPLAN-style questions. A question is never repeated within
 the same level for the same child. Answers are marked **on the server** from the
 question bank (with a 90%-similarity match for typed or spoken answers), so a
 browser cannot award itself points, and questions in locked levels are refused.
+Each question runs against its timer (see *Rewards* above); the server checks
+the elapsed time itself, so a timed-out question cannot earn a reward.
 
 Questions are asked in the family's language (see *Master settings*). The child's
 device shows the translated wording while the server still marks against the

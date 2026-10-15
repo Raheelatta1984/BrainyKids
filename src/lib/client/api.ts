@@ -105,6 +105,13 @@ export type AnswerResult = {
   unlockedLevel: number;
   levelFinished: boolean;
   duplicate: boolean;
+  scorePercent: number;
+  earnedMinor: number;
+  walletBalanceMinor: number;
+  rewardKind: "money" | "robux";
+  currency: string;
+  timedOut: boolean;
+  rewardBlocked: "timeout" | "schedule" | "daily-limit" | "weekly-limit" | null;
 };
 
 export type PasskeyStatus = { parent: number; kid: number; hasAny: boolean };
@@ -161,9 +168,13 @@ export const actions = {
   kidLogout: (parentPassword: string) => api.post<{ ok: true }>("/api/kid-session/logout", { parentPassword }),
   /** Says whether this device is still linked. A network error is NOT a sign-out. */
   heartbeat: () => api.post<HeartbeatResponse>("/api/kid-session/heartbeat"),
-  answer: (questionId: string, picked: string, level: number) =>
-    api.post<{ result: AnswerResult; kid: KidView | null }>("/api/kid-session/answers", { questionId, picked, level }),
+  answer: (questionId: string, picked: string, level: number, elapsedSeconds = 0) =>
+    api.post<{ result: AnswerResult; kid: KidView | null }>("/api/kid-session/answers", { questionId, picked, level, elapsedSeconds }),
   requestScreenTime: () => api.post<{ minutes: number }>("/api/kid-session/screen-time"),
+  /** Kid asks a parent to realise the wallet; approval (not the request) resets it to zero. */
+  requestRealisation: () => api.post<{ amountMinor: number; kid: KidView | null }>("/api/kid-session/rewards"),
+  rewardDecision: (id: string, action: "approve" | "decline") =>
+    api.post<{ amountMinor: number; kid: KidView | null }>(`/api/kids/${id}/rewards`, { action }),
   setLevel: (level: number) => api.post<{ kid: KidView | null }>("/api/kid-session/level", { level }),
 
   /** Master settings: date, time, language, voice over. */

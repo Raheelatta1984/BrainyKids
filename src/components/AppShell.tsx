@@ -165,6 +165,7 @@ export default function AppShell() {
       <ParentDashboard
         parent={snapshot.parent}
         kids={snapshot.kids}
+        leaderboard={snapshot.leaderboard}
         pairings={snapshot.pairings}
         passkeys={snapshot.passkeys}
         settings={settings}
@@ -181,7 +182,7 @@ export default function AppShell() {
     return (
       <>
         {reconnecting && <p className="banner warn reconnect-banner">{t(settings.locale, "kid.reconnecting")}</p>}
-        <KidApp kid={snapshot.kid} parent={snapshot.parent} settings={settings} live={live} />
+        <KidApp kid={snapshot.kid} parent={snapshot.parent} settings={settings} live={live} leaderboard={snapshot.leaderboard} />
       </>
     );
   }

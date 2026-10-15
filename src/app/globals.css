@@ -520,6 +520,55 @@ button.link {
   align-items: center;
 }
 
+.pill.timer.low {
+  background: #ffe3e3;
+  color: #9d1c1c;
+}
+
+.timer-bar {
+  margin-bottom: 12px;
+}
+
+.timer-bar > span {
+  background: #f5a623;
+}
+
+.leaderboard ol {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.leaderboard li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: #f5f7ff;
+}
+
+.leaderboard li.me {
+  outline: 2px solid var(--accent, #5b6cff);
+  font-weight: 700;
+}
+
+.settings-group {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.settings-group legend {
+  font-weight: 700;
+  padding: 0 6px;
+}
+
 .quiz-top {
   display: flex;
   justify-content: space-between;

@@ -4,14 +4,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { actions, type Live } from "@/lib/client/api";
 import { reportBehaviour } from "@/lib/client/diagnostics";
 import { useToasts, type ToastItem } from "@/lib/client/useToasts";
-import { canonicalChoiceFor, levelQuestionCount, matchChoice, tracksForAge } from "@/lib/quiz-logic";
+import { canonicalChoiceFor, levelQuestionCount, levelTitle, matchChoice, tierForLevel, tracksForAge } from "@/lib/quiz-logic";
+import { difficultyForQuestion, formatCountdown, formatReward, timeLimitSeconds } from "@/lib/rewards";
 import { localiseQuestion, type LocalisedQuestion } from "@/lib/quiz-i18n";
 import { t } from "@/lib/i18n";
 import { isRtl } from "@/lib/settings";
 import { listenOnce, recognitionSupported, speakText, speechSupported, stopSpeaking } from "@/lib/voice";
 import { QUESTIONS, type Question } from "@/lib/quiz-data";
 import ChatPanel from "@/components/ChatPanel";
-import type { FamilySettings, KidView, Level, LiveEvent, Theme } from "@/lib/types";
+import type { FamilySettings, KidView, LeaderboardEntry, Level, LiveEvent, Theme } from "@/lib/types";
 
 export const THEMES: Record<Theme, { label: string; emoji: string }> = {
   space: { label: "Space Explorers", emoji: "🚀" },
@@ -20,8 +21,6 @@ export const THEMES: Record<Theme, { label: string; emoji: string }> = {
   dinos: { label: "Dino Dig", emoji: "🦖" },
 };
 
-const LEVEL_SUBTITLE = ["kid.levelStarter", "kid.levelExplorer", "kid.levelChampion"] as const;
-
 type Feedback = {
   correct: boolean;
   picked: string;
@@ -29,6 +28,10 @@ type Feedback = {
   explain: string;
   points: number;
   levelFinished: boolean;
+  scorePercent: number;
+  earnedMinor: number;
+  timedOut: boolean;
+  rewardBlocked: string | null;
 };
 
 /**
@@ -44,11 +47,13 @@ export default function KidApp({
   parent,
   settings,
   live,
+  leaderboard = [],
 }: {
   kid: KidView;
   parent: { name: string; email: string };
   settings: FamilySettings;
   live: Live;
+  leaderboard?: LeaderboardEntry[];
 }) {
   const theme = THEMES[kid.theme];
   const locale = settings.locale;
@@ -119,6 +124,8 @@ export default function KidApp({
           </span>
         </span>
         <span className="kid-stats">
+          <span className="pill">🏅 Level {kid.unlockedLevel} · {levelTitle(kid.unlockedLevel)}</span>
+          <span className="pill">💰 {formatReward(kid.walletBalanceMinor, settings.rewardKind, settings.currency)}</span>
           <span className="pill">⭐ {kid.points} points</span>
           <span className="pill">⏱️ {kid.approvedMinutes} min</span>
         </span>
@@ -169,13 +176,14 @@ export default function KidApp({
           />
         </section>
       ) : level === null ? (
-        <LevelPicker kid={kid} onPick={setLevel} live={live} settings={settings} />
+        <LevelPicker kid={kid} onPick={setLevel} live={live} settings={settings} leaderboard={leaderboard} />
       ) : (
         <Quiz
           key={`${kid.id}-${level}-${locale}`}
           kid={kid}
           level={level}
           locale={locale}
+          settings={settings}
           voiceOn={voiceOn}
           onBack={() => setLevel(null)}
           live={live}
@@ -225,6 +233,10 @@ function toastForKid(event: LiveEvent, kidId: string, locale: FamilySettings["lo
       return payload.text && payload.from === "parent"
         ? { id: event.id, emoji: "💬", title: payload.text, body: t(locale, "chat.withParent") }
         : null;
+    case "reward.approved":
+      return { id: event.id, emoji: "💰", title: "Your money was approved!", body: "Your wallet is reset — ask your parent for your money" };
+    case "reward.declined":
+      return { id: event.id, emoji: "💬", title: "Your realise request was sent back", body: "Your balance is still saved" };
     case "screen_time.approved":
       return {
         id: event.id,
@@ -241,22 +253,51 @@ function toastForKid(event: LiveEvent, kidId: string, locale: FamilySettings["lo
   }
 }
 
+/** The family scoreboard: ranked by level, so “I'm on Level 8!” is the competition. */
+export function Leaderboard({ entries, highlightKidId, settings }: { entries: LeaderboardEntry[]; highlightKidId?: string; settings: FamilySettings }) {
+  if (entries.length === 0) return null;
+  return (
+    <div className="leaderboard">
+      <h3>🏆 Scoreboard</h3>
+      <ol>
+        {entries.map((entry, index) => (
+          <li key={entry.kidId} className={entry.kidId === highlightKidId ? "me" : ""}>
+            <span>
+              {index + 1}. {entry.name} {entry.kidId === highlightKidId ? "(you)" : ""}
+            </span>
+            <span>
+              Level {entry.unlockedLevel} · {entry.accuracy}% · {formatReward(entry.lifetimeEarnedMinor, settings.rewardKind, settings.currency)} earned
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function LevelPicker({
   kid,
   onPick,
   live,
   settings,
+  leaderboard,
 }: {
   kid: KidView;
   onPick: (level: Level) => void;
   live: Live;
   settings: FamilySettings;
+  leaderboard: LeaderboardEntry[];
 }) {
   const locale = settings.locale;
   const [busy, setBusy] = useState(false);
   const [asked, setAsked] = useState(false);
+  const [askedRealise, setAskedRealise] = useState(false);
   const [error, setError] = useState("");
-  const levels: Level[] = [1, 2, 3];
+  // Levels never end. Show a window around the child's frontier (plus the next
+  // locked one) instead of an ever-growing list.
+  const frontier = Math.max(kid.unlockedLevel, kid.level);
+  const firstShown = Math.max(1, frontier - 2);
+  const levels: Level[] = Array.from({ length: frontier - firstShown + 2 }, (_, i) => firstShown + i);
 
   async function choose(level: Level) {
     setBusy(true);
@@ -284,6 +325,19 @@ function LevelPicker({
     await live.refresh();
   }
 
+  async function askToRealise() {
+    setBusy(true);
+    setError("");
+    const result = await actions.requestRealisation();
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setAskedRealise(true);
+    await live.refresh();
+  }
+
   return (
     <section className="card">
       <h2>{t(locale, "kid.chooseLevel")}</h2>
@@ -301,7 +355,7 @@ function LevelPicker({
               onClick={() => void choose(level)}
             >
               <strong>
-                {t(locale, "kid.levelName", { n: level })} · {t(locale, LEVEL_SUBTITLE[level - 1])}
+                {t(locale, "kid.levelName", { n: level })} · {levelTitle(level)}
               </strong>
               <small>{locked ? t(locale, "kid.levelLocked") : t(locale, "kid.levelProgress", { done, total })}</small>
               <span className="bar">
@@ -310,6 +364,31 @@ function LevelPicker({
             </button>
           );
         })}
+      </div>
+
+      <div className="request">
+        <p>
+          💰 Wallet: <strong>{formatReward(kid.walletBalanceMinor, settings.rewardKind, settings.currency)}</strong>
+          <span className="muted">
+            {" "}
+            · today {formatReward(kid.earnedTodayMinor, settings.rewardKind, settings.currency)}
+            {settings.dailyEarnLimitMinor > 0 ? ` of ${formatReward(settings.dailyEarnLimitMinor, settings.rewardKind, settings.currency)}` : ""} · this week{" "}
+            {formatReward(kid.earnedThisWeekMinor, settings.rewardKind, settings.currency)} · a perfect answer earns{" "}
+            {formatReward(settings.maxRewardPerQuestionMinor, settings.rewardKind, settings.currency)}
+          </span>
+        </p>
+        <button
+          className="primary"
+          disabled={kid.walletBalanceMinor === 0 || kid.requestedRewardMinor > 0 || busy || askedRealise}
+          onClick={() => void askToRealise()}
+        >
+          {kid.requestedRewardMinor > 0 || askedRealise
+            ? t(locale, "kid.waitingParent")
+            : `Ask a parent to realise ${formatReward(kid.walletBalanceMinor, settings.rewardKind, settings.currency)}`}
+        </button>
+        {kid.requestedRewardMinor > 0 && (
+          <p className="muted">Waiting for a parent to approve {formatReward(kid.requestedRewardMinor, settings.rewardKind, settings.currency)}. Your wallet resets when they approve.</p>
+        )}
       </div>
 
       <div className="request">
@@ -323,6 +402,8 @@ function LevelPicker({
         {asked && <p className="muted">{t(locale, "kid.parentTold")}</p>}
         {error && <p className="banner error">{error}</p>}
       </div>
+
+      <Leaderboard entries={leaderboard} highlightKidId={kid.id} settings={settings} />
     </section>
   );
 }
@@ -331,6 +412,7 @@ function Quiz({
   kid,
   level,
   locale,
+  settings,
   voiceOn,
   onBack,
   live,
@@ -338,6 +420,7 @@ function Quiz({
   kid: KidView;
   level: Level;
   locale: FamilySettings["locale"];
+  settings: FamilySettings;
   voiceOn: boolean;
   onBack: () => void;
   live: Live;
@@ -350,6 +433,34 @@ function Quiz({
   const [listening, setListening] = useState(false);
   const [canListen, setCanListen] = useState(false);
   const [error, setError] = useState("");
+  const startedAt = useRef<number>(Date.now());
+  const [secondsLeft, setSecondsLeft] = useState<number>(() =>
+    question ? timeLimitSeconds(settings, difficultyForQuestion(question)) : 0,
+  );
+  const answerRef = useRef<(canonical: string, shown: string) => Promise<void>>(async () => undefined);
+
+  // Per-question timer: harder questions get more time (Master settings, max
+  // 10 minutes). When it runs out the question is marked as timed out.
+  useEffect(() => {
+    if (!question) return;
+    startedAt.current = Date.now();
+    const limit = timeLimitSeconds(settings, difficultyForQuestion(question));
+    const kickoff = setTimeout(() => setSecondsLeft(limit), 0);
+    const tick = setInterval(() => {
+      const left = limit - (Date.now() - startedAt.current) / 1000;
+      setSecondsLeft(Math.max(0, left));
+      if (left <= 0) {
+        clearInterval(tick);
+        void answerRef.current("", "");
+      }
+    }, 250);
+    return () => {
+      clearTimeout(kickoff);
+      clearInterval(tick);
+    };
+    // Settings are fixed for the mounted quiz; re-arm only for a new question.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [question]);
 
   // Speech recognition is browser-only, so check it just after mount to keep the
   // server-rendered markup and the first client render identical.
@@ -397,6 +508,10 @@ function Quiz({
       explain: question.explain,
       points: outcome.points,
       levelFinished: outcome.levelFinished,
+      scorePercent: outcome.scorePercent,
+      earnedMinor: outcome.earnedMinor,
+      timedOut: outcome.timedOut,
+      rewardBlocked: outcome.rewardBlocked,
     });
     if (voiceOn) {
       speakText(
@@ -408,6 +523,11 @@ function Quiz({
     }
     await live.refresh();
   }
+
+  // The timer interval calls the latest copy of `answer` (with fresh guards).
+  useEffect(() => {
+    answerRef.current = answer;
+  });
 
   function checkTyped(text: string) {
     if (!question || feedback || busy) return;
@@ -455,7 +575,18 @@ function Quiz({
         <span>
           {t(locale, "kid.levelName", { n: level })} · {done}/{total}
         </span>
+        {question && !feedback && (
+          <span className={`pill timer ${secondsLeft <= 30 ? "low" : ""}`} role="timer" aria-label="Time left for this question">
+            ⏱️ {formatCountdown(secondsLeft)} · {difficultyForQuestion(question)} · perfect ={" "}
+            {formatReward(settings.maxRewardPerQuestionMinor, settings.rewardKind, settings.currency)}
+          </span>
+        )}
       </div>
+      {question && !feedback && (
+        <span className="bar timer-bar">
+          <span style={{ width: `${Math.max(0, Math.min(100, (secondsLeft / Math.max(1, timeLimitSeconds(settings, difficultyForQuestion(question)))) * 100))}%` }} />
+        </span>
+      )}
 
       {finished ? (
         <div className="center">
@@ -521,7 +652,23 @@ function Quiz({
 
           {feedback && (
             <div className={`feedback ${feedback.correct ? "good" : "bad"}`} role="status">
-              <h3>{feedback.correct ? t(locale, "kid.correct") : t(locale, "kid.notQuite", { answer: feedback.answer })}</h3>
+              <h3>
+                {feedback.timedOut
+                  ? "⏰ Time's up!"
+                  : feedback.correct
+                    ? t(locale, "kid.correct")
+                    : t(locale, "kid.notQuite", { answer: feedback.answer })}
+              </h3>
+              {!feedback.timedOut && (
+                <p>
+                  {feedback.scorePercent}% close
+                  {feedback.earnedMinor > 0
+                    ? ` · 💰 +${formatReward(feedback.earnedMinor, settings.rewardKind, settings.currency)}`
+                    : feedback.rewardBlocked
+                      ? ` · no reward this time (${feedback.rewardBlocked.replace("-", " ")})`
+                      : ""}
+                </p>
+              )}
               <p>{feedback.explain}</p>
               <button
                 className="link"
@@ -537,7 +684,7 @@ function Quiz({
               {feedback.levelFinished ? (
                 <>
                   <p className="banner good">
-                    {kid.unlockedLevel < 3 ? t(locale, "kid.levelUnlockNote") : t(locale, "kid.champion")}
+                    {t(locale, "kid.levelUnlockNote")} {t(locale, "kid.levelName", { n: level + 1 })} · {levelTitle(level + 1)}
                   </p>
                   <button className="primary" onClick={onBack}>
                     {t(locale, "kid.backToLevels")}
@@ -627,7 +774,8 @@ function pickQuestion(
 ): LocalisedQuestion | null {
   const tracks = tracksForAge(kid.age);
   const used = new Set([...(kid.usedByLevel[String(level)] ?? []), ...(extraUsed ?? [])]);
-  const pool: Question[] = QUESTIONS.filter((q) => q.level === level && tracks.includes(q.track) && !used.has(q.id));
+  const tier = tierForLevel(level);
+  const pool: Question[] = QUESTIONS.filter((q) => q.level === tier && tracks.includes(q.track) && !used.has(q.id));
   if (pool.length === 0) return null;
   return localiseQuestion(pool[Math.floor(Math.random() * pool.length)], locale);
 }

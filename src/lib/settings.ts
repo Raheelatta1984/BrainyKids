@@ -14,7 +14,31 @@ export const DEFAULT_SETTINGS: FamilySettings = {
   kidVoiceOver: true,
   parentVoiceOver: false,
   kidDictation: true,
+  // Rewards: A$0.50 for a perfect answer (40c at 90%+), A$2/day and A$10/week
+  // caps until a parent changes them. Easy questions get 2 minutes, medium 5,
+  // hard 10 — the maximum the timer ever allows.
+  rewardKind: "money",
+  currency: "AUD",
+  maxRewardPerQuestionMinor: 50,
+  dailyEarnLimitMinor: 200,
+  weeklyEarnLimitMinor: 1000,
+  earnScheduleEnabled: false,
+  earnDays: [0, 1, 2, 3, 4, 5, 6],
+  earnStartTime: "07:00",
+  earnEndTime: "20:00",
+  timerEasySeconds: 120,
+  timerMediumSeconds: 300,
+  timerHardSeconds: 600,
 };
+
+function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function validHm(value: unknown, fallback: string): string {
+  return typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value) ? value : fallback;
+}
 
 export type LocaleInfo = {
   code: LocaleCode;
@@ -68,6 +92,22 @@ export function resolveSettings(input?: Partial<FamilySettings> | null): FamilyS
     parentVoiceOver:
       typeof input.parentVoiceOver === "boolean" ? input.parentVoiceOver : DEFAULT_SETTINGS.parentVoiceOver,
     kidDictation: typeof input.kidDictation === "boolean" ? input.kidDictation : DEFAULT_SETTINGS.kidDictation,
+    rewardKind: input.rewardKind === "robux" ? "robux" : "money",
+    currency:
+      typeof input.currency === "string" && /^[A-Z]{3}$/.test(input.currency) ? input.currency : DEFAULT_SETTINGS.currency,
+    maxRewardPerQuestionMinor: clampInt(input.maxRewardPerQuestionMinor, DEFAULT_SETTINGS.maxRewardPerQuestionMinor, 0, 100_000),
+    dailyEarnLimitMinor: clampInt(input.dailyEarnLimitMinor, DEFAULT_SETTINGS.dailyEarnLimitMinor, 0, 10_000_000),
+    weeklyEarnLimitMinor: clampInt(input.weeklyEarnLimitMinor, DEFAULT_SETTINGS.weeklyEarnLimitMinor, 0, 10_000_000),
+    earnScheduleEnabled:
+      typeof input.earnScheduleEnabled === "boolean" ? input.earnScheduleEnabled : DEFAULT_SETTINGS.earnScheduleEnabled,
+    earnDays: Array.isArray(input.earnDays)
+      ? [...new Set(input.earnDays.filter((d): d is number => Number.isInteger(d) && d >= 0 && d <= 6))].sort()
+      : [...DEFAULT_SETTINGS.earnDays],
+    earnStartTime: validHm(input.earnStartTime, DEFAULT_SETTINGS.earnStartTime),
+    earnEndTime: validHm(input.earnEndTime, DEFAULT_SETTINGS.earnEndTime),
+    timerEasySeconds: clampInt(input.timerEasySeconds, DEFAULT_SETTINGS.timerEasySeconds, 30, 600),
+    timerMediumSeconds: clampInt(input.timerMediumSeconds, DEFAULT_SETTINGS.timerMediumSeconds, 30, 600),
+    timerHardSeconds: clampInt(input.timerHardSeconds, DEFAULT_SETTINGS.timerHardSeconds, 30, 600),
   };
 }
 
