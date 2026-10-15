@@ -7,7 +7,7 @@ import type { Gender, Level, LevelAction, Theme } from "@/lib/types";
 import { answerScorePercent, levelProgress, levelQuestionCount, matchesAnswer } from "@/lib/quiz-logic";
 import { generateQuestion } from "@/lib/question-engine";
 import { resolveSettings } from "@/lib/settings";
-import { difficultyForQuestion, earningAllowedAt, formatReward, rewardForScore, timeLimitSeconds } from "@/lib/rewards";
+import { correctAnswerRewardMinor, difficultyForQuestion, earningAllowedAt, formatReward, timeLimitSeconds, wrongAnswerDeductionMinor } from "@/lib/rewards";
 
 export type CreateKidInput = {
   name: string;
@@ -202,28 +202,31 @@ export function recordAnswer(
       text: timedOut ? `Time up · ${question.topic}` : correct ? `Correct · ${question.topic}` : `Tried · ${question.topic}`,
     });
 
-    // Real reward: full amount for 100%, 80% at 90%+ (50c → 40c), less below.
-    earnedMinor = rewardForScore(scorePercent, settings.maxRewardPerQuestionMinor);
-    if (earnedMinor > 0) {
-      if (timedOut) {
-        rewardBlocked = "timeout";
-        earnedMinor = 0;
-      } else if (!earningAllowedAt(settings)) {
-        rewardBlocked = "schedule";
-        earnedMinor = 0;
-      } else {
-        const sums = earnedSumsFromLedger(doc, kid);
-        if (settings.dailyEarnLimitMinor > 0) {
-          const remaining = settings.dailyEarnLimitMinor - sums.today;
-          if (remaining <= 0) rewardBlocked = "daily-limit";
-          earnedMinor = Math.min(earnedMinor, Math.max(0, remaining));
-        }
-        if (earnedMinor > 0 && settings.weeklyEarnLimitMinor > 0) {
-          const remaining = settings.weeklyEarnLimitMinor - sums.week;
-          if (remaining <= 0) rewardBlocked = "weekly-limit";
-          earnedMinor = Math.min(earnedMinor, Math.max(0, remaining));
+    // Flat reward: every correct answer earns the same amount (A$0.05 by default).
+    // Only correct answers earn; a wrong or timed-out answer takes money off below.
+    const maxRewardMinor = settings.maxRewardPerQuestionMinor;
+    if (correct) {
+      earnedMinor = correctAnswerRewardMinor(maxRewardMinor);
+      if (earnedMinor > 0) {
+        if (!earningAllowedAt(settings)) {
+          rewardBlocked = "schedule";
+          earnedMinor = 0;
+        } else {
+          const sums = earnedSumsFromLedger(doc, kid);
+          if (settings.dailyEarnLimitMinor > 0) {
+            const remaining = settings.dailyEarnLimitMinor - sums.today;
+            if (remaining <= 0) rewardBlocked = "daily-limit";
+            earnedMinor = Math.min(earnedMinor, Math.max(0, remaining));
+          }
+          if (earnedMinor > 0 && settings.weeklyEarnLimitMinor > 0) {
+            const remaining = settings.weeklyEarnLimitMinor - sums.week;
+            if (remaining <= 0) rewardBlocked = "weekly-limit";
+            earnedMinor = Math.min(earnedMinor, Math.max(0, remaining));
+          }
         }
       }
+    } else if (timedOut) {
+      rewardBlocked = "timeout";
     }
     if (earnedMinor > 0) {
       kid.walletBalanceMinor = (kid.walletBalanceMinor ?? 0) + earnedMinor;
@@ -267,6 +270,37 @@ export function recordAnswer(
         },
         { throttleKey: `${kid.id}:${rewardBlocked}` },
       );
+    }
+    // Wrong or timed-out answer: 50% of the per-question amount comes off the
+    // wallet (2c of 5c), never taking it below zero. Logged like every other wallet move.
+    if (!correct) {
+      const deductMinor = wrongAnswerDeductionMinor(maxRewardMinor);
+      const before = kid.walletBalanceMinor ?? 0;
+      const taken = Math.min(deductMinor, before);
+      if (taken > 0) {
+        kid.walletBalanceMinor = before - taken;
+        appendReward(doc, {
+          id: newId(),
+          parentId: kid.parentId,
+          kidId: kid.id,
+          at: Date.now(),
+          type: "deducted",
+          amountMinor: taken,
+          kind: settings.rewardKind,
+          currency: settings.currency,
+          balanceAfterMinor: kid.walletBalanceMinor,
+          questionId,
+          topic: question.topic,
+          level,
+          scorePercent,
+          note: timedOut ? "Time up — half the reward is taken off" : "Wrong answer — half the reward is taken off",
+        });
+        addActivity(kid, {
+          kind: "reward",
+          correct: false,
+          text: `Deducted ${formatReward(taken, settings.rewardKind, settings.currency)} · ${question.topic} (${scorePercent}%)`,
+        });
+      }
     }
   }
   touchKid(kid, true);
