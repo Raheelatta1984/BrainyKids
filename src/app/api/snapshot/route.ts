@@ -5,7 +5,7 @@ import { COOKIES, requestProtocol } from "@/lib/server/auth";
 import { passkeysForParent } from "@/lib/server/passkeys";
 import { StorageError, store } from "@/lib/server/store";
 import { deviceAuth, parentAuth } from "@/lib/server/session";
-import { kidView, parentView, pendingPairings, settingsForParent } from "@/lib/server/views";
+import { kidView, leaderboardFor, parentView, pendingPairings, settingsForParent } from "@/lib/server/views";
 import type { Snapshot } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -75,6 +75,7 @@ export const GET = route(async (req: NextRequest) => {
       role: "parent",
       parent: parentView(parent.parent),
       kids: kids.map((k) => kidView(doc, k, now, "parent")),
+      leaderboard: leaderboardFor(doc, parent.parent.id),
       pairings: pendingPairings(doc, parent.parent.id, now),
       passkeys: passkeysForParent(doc.passkeys, parent.parent.id, doc.kids),
       settings: settingsForParent(doc, parent.parent.id),
@@ -110,6 +111,7 @@ export const GET = route(async (req: NextRequest) => {
     const snapshot: Snapshot = {
       role: "kid",
       kid: kidView(doc, device.kid, now, "kid"),
+      leaderboard: leaderboardFor(doc, device.kid.parentId),
       parent: owner ? { name: owner.name, email: owner.email } : { name: "Parent", email: "" },
       settings: settingsForParent(doc, device.kid.parentId),
       storage: latestStorage,

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { LOCALES, deviceTimeZone, formatStamp, resolveSettings, timeZoneOptions } from "@/lib/settings";
+import { CURRENCIES, WEEKDAY_LABELS, formatReward } from "@/lib/rewards";
 import { questionsTranslated } from "@/lib/quiz-i18n";
 import { actions } from "@/lib/client/api";
 import { reportBehaviour } from "@/lib/client/diagnostics";
@@ -143,6 +144,104 @@ export default function FamilySettingsCard({
           <input type="checkbox" checked={draft.parentVoiceOver} onChange={(event) => update("parentVoiceOver", event.target.checked)} />
           Read new chat messages aloud on my device
         </label>
+
+        <fieldset className="settings-group">
+          <legend>💰 Rewards — real money or Robux, not big points</legend>
+          <p className="muted small">
+            A perfect (100%) answer earns the full amount below. A 90%+ near answer earns 80% of it — for example{" "}
+            {formatReward(draft.maxRewardPerQuestionMinor, draft.rewardKind, draft.currency)} →{" "}
+            {formatReward(Math.round(draft.maxRewardPerQuestionMinor * 0.8), draft.rewardKind, draft.currency)}. Money sits in the
+            child&apos;s wallet until they ask to realise it and you approve — only then does the wallet reset to zero. Every earn,
+            request and approval is written to the child&apos;s transaction log.
+          </p>
+          <label>
+            Children earn
+            <select value={draft.rewardKind} onChange={(event) => update("rewardKind", event.target.value as FamilySettings["rewardKind"])}>
+              <option value="money">Real money (local currency)</option>
+              <option value="robux">Robux (Roblox)</option>
+            </select>
+          </label>
+          {draft.rewardKind === "money" && (
+            <label>
+              Currency
+              <select value={draft.currency} onChange={(event) => update("currency", event.target.value)}>
+                {CURRENCIES.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.label} ({c.code} {c.symbol})
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label>
+            Reward for a perfect answer ({draft.rewardKind === "robux" ? "Robux" : "cents"})
+            <input
+              type="number"
+              min={0}
+              max={100000}
+              value={draft.maxRewardPerQuestionMinor}
+              onChange={(event) => update("maxRewardPerQuestionMinor", Number(event.target.value))}
+            />
+          </label>
+          <label>
+            Daily earn limit ({draft.rewardKind === "robux" ? "Robux" : "cents"}, 0 = no limit)
+            <input type="number" min={0} value={draft.dailyEarnLimitMinor} onChange={(event) => update("dailyEarnLimitMinor", Number(event.target.value))} />
+          </label>
+          <label>
+            Weekly earn limit ({draft.rewardKind === "robux" ? "Robux" : "cents"}, 0 = no limit)
+            <input type="number" min={0} value={draft.weeklyEarnLimitMinor} onChange={(event) => update("weeklyEarnLimitMinor", Number(event.target.value))} />
+          </label>
+          <label className="inline">
+            <input type="checkbox" checked={draft.earnScheduleEnabled} onChange={(event) => update("earnScheduleEnabled", event.target.checked)} />
+            Only let children earn on a schedule
+          </label>
+          {draft.earnScheduleEnabled && (
+            <>
+              <div className="row wrap gap" role="group" aria-label="Earning days">
+                {WEEKDAY_LABELS.map((label, day) => (
+                  <label key={label} className="inline">
+                    <input
+                      type="checkbox"
+                      checked={draft.earnDays.includes(day)}
+                      onChange={(event) =>
+                        update("earnDays", event.target.checked ? [...draft.earnDays, day].sort() : draft.earnDays.filter((d) => d !== day))
+                      }
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+              <label>
+                Earn from
+                <input type="time" value={draft.earnStartTime} onChange={(event) => update("earnStartTime", event.target.value)} />
+              </label>
+              <label>
+                Earn until
+                <input type="time" value={draft.earnEndTime} onChange={(event) => update("earnEndTime", event.target.value)} />
+              </label>
+            </>
+          )}
+        </fieldset>
+
+        <fieldset className="settings-group">
+          <legend>⏱️ Question timers</legend>
+          <p className="muted small">
+            Every question counts down. Easy questions get the least time, hard questions the most — never more than 10 minutes
+            (600 seconds). Running out of time earns no reward for that question.
+          </p>
+          <label>
+            Easy questions (seconds)
+            <input type="number" min={30} max={600} value={draft.timerEasySeconds} onChange={(event) => update("timerEasySeconds", Number(event.target.value))} />
+          </label>
+          <label>
+            Medium questions (seconds)
+            <input type="number" min={30} max={600} value={draft.timerMediumSeconds} onChange={(event) => update("timerMediumSeconds", Number(event.target.value))} />
+          </label>
+          <label>
+            Hard questions (seconds)
+            <input type="number" min={30} max={600} value={draft.timerHardSeconds} onChange={(event) => update("timerHardSeconds", Number(event.target.value))} />
+          </label>
+        </fieldset>
 
         <div className="settings-preview">
           <span className="muted small">Every log line, message and activity entry will read like this:</span>

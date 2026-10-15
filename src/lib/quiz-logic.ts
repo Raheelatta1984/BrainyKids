@@ -1,5 +1,27 @@
 import { QUESTIONS, type Question, type Track } from "./quiz-data";
-import type { Level } from "./types";
+import type { Level, QuestionTier } from "./types";
+
+/**
+ * Maps an endless progression level onto the bank's three difficulty tiers.
+ * Levels 1–3 are the tiers themselves; every level after that replays the
+ * hardest tier (fresh to that level, because answers are tracked per level),
+ * so a child on Level 8 is answering hard questions, not Level-1 ones again.
+ */
+export function tierForLevel(level: Level): QuestionTier {
+  if (level <= 1) return 1;
+  if (level === 2) return 2;
+  return 3;
+}
+
+/** Friendly rank names that keep growing past the old Level-3 ceiling. */
+export function levelTitle(level: Level): string {
+  if (level <= 1) return "Starter";
+  if (level === 2) return "Explorer";
+  if (level === 3) return "Champion";
+  if (level === 4) return "Master";
+  if (level === 5) return "Grand Master";
+  return `Legend ${level - 5}`;
+}
 
 /** The parts of a kid profile the quiz logic needs. Works for API payloads and local state. */
 export type QuizKid = {
@@ -18,16 +40,16 @@ export function tracksForAge(age: number): Track[] {
 export function nextQuestion(kid: QuizKid): Question | null {
   const tracks = tracksForAge(kid.age);
   const used = new Set(kid.usedByLevel[String(kid.level)] ?? []);
-  const pool = QUESTIONS.filter(
-    (q) => q.level === kid.level && tracks.includes(q.track) && !used.has(q.id),
-  );
+  const tier = tierForLevel(kid.level);
+  const pool = QUESTIONS.filter((q) => q.level === tier && tracks.includes(q.track) && !used.has(q.id));
   if (pool.length === 0) return null;
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
 export function levelQuestionCount(kid: QuizKid, level: Level): { total: number; done: number } {
   const tracks = tracksForAge(kid.age);
-  const total = QUESTIONS.filter((q) => q.level === level && tracks.includes(q.track)).length;
+  const tier = tierForLevel(level);
+  const total = QUESTIONS.filter((q) => q.level === tier && tracks.includes(q.track)).length;
   const done = (kid.usedByLevel[String(level)] ?? []).length;
   return { total, done: Math.min(done, total) };
 }
@@ -57,6 +79,28 @@ export function similarity(a: string, b: string): number {
 // Typed or spoken answers count as correct when they are at least 90% similar to the right choice.
 export function matchesAnswer(input: string, answer: string): boolean {
   return similarity(input, answer) >= 0.9;
+}
+
+function firstNumber(s: string): number | null {
+  const match = s.replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : null;
+}
+
+/**
+ * How close an answer is, 0–100. An exact answer is 100; for numeric answers
+ * closeness is proportional (40 vs 42 ≈ 95); for words it is the text
+ * similarity. This is what turns “almost right” into a smaller real reward
+ * (90%+ earns 80% of the maximum — 40c of a 50c question).
+ */
+export function answerScorePercent(picked: string, answer: string): number {
+  if (picked.trim() === answer) return 100;
+  const pickedNum = firstNumber(picked);
+  const answerNum = firstNumber(answer);
+  if (pickedNum !== null && answerNum !== null) {
+    if (answerNum === 0) return pickedNum === 0 ? 100 : 0;
+    return Math.max(0, Math.min(100, Math.round((1 - Math.abs(pickedNum - answerNum) / Math.abs(answerNum)) * 100)));
+  }
+  return Math.round(similarity(picked, answer) * 100);
 }
 
 // Maps a spoken or typed reply to one of the choices. Accepts the choice text, or a letter (A/B/C/D) or number (1–4).

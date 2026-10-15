@@ -14,7 +14,7 @@ export const POST = route(async (req: NextRequest) => {
 
   const body = await readBody(req);
   const level = num(body.level, 0);
-  if (level < 1 || level > 3) return error("Unknown level.");
+  if (level < 1 || level > 999) return error("Unknown level.");
 
   const outcome = await store.mutate((doc) => {
     const kid = doc.kids.find((k) => k.id === auth.kid.id);

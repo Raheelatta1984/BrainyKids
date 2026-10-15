@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { isDateFormat, isLocaleCode, isTimeFormat, isValidTimeZone, localeInfo, resolveSettings } from "@/lib/settings";
+import { isCurrencyCode, isRewardKind } from "@/lib/rewards";
 import { error, json, readBody, route } from "@/lib/server/http";
 import { recordBehaviour } from "@/lib/server/diagnostics";
 import { parentAuth } from "@/lib/server/session";
@@ -10,7 +11,16 @@ import type { FamilySettings } from "@/lib/types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const BOOLEAN_KEYS = ["kidVoiceOver", "parentVoiceOver", "kidDictation"] as const;
+const BOOLEAN_KEYS = ["kidVoiceOver", "parentVoiceOver", "kidDictation", "earnScheduleEnabled"] as const;
+
+const NUMBER_RANGES: Partial<Record<keyof FamilySettings, [number, number]>> = {
+  maxRewardPerQuestionMinor: [0, 100_000],
+  dailyEarnLimitMinor: [0, 10_000_000],
+  weeklyEarnLimitMinor: [0, 10_000_000],
+  timerEasySeconds: [30, 600],
+  timerMediumSeconds: [30, 600],
+  timerHardSeconds: [30, 600],
+};
 
 /** The family's master settings: date, time, language and voice. */
 export const GET = route(async (req: NextRequest) => {
@@ -57,6 +67,34 @@ export const PATCH = route(async (req: NextRequest) => {
     if (!provided(key)) continue;
     if (typeof body[key] === "boolean") patch[key] = body[key] as boolean;
     else rejected.push({ field: key, value: body[key], fallback: true });
+  }
+  // Rewards & timers (Master settings).
+  if (provided("rewardKind")) {
+    if (isRewardKind(body.rewardKind)) patch.rewardKind = body.rewardKind;
+    else rejected.push({ field: "rewardKind", value: body.rewardKind, fallback: "money" });
+  }
+  if (provided("currency")) {
+    if (isCurrencyCode(body.currency)) patch.currency = body.currency;
+    else rejected.push({ field: "currency", value: body.currency, fallback: "AUD" });
+  }
+  for (const [key, [min, max]] of Object.entries(NUMBER_RANGES) as [keyof FamilySettings, [number, number]][]) {
+    if (!provided(key)) continue;
+    const value = body[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= min && value <= max) {
+      (patch as Record<string, unknown>)[key] = Math.round(value);
+    } else rejected.push({ field: key, value, fallback: min });
+  }
+  if (provided("earnDays")) {
+    const days = Array.isArray(body.earnDays)
+      ? [...new Set(body.earnDays.filter((d): d is number => Number.isInteger(d) && (d as number) >= 0 && (d as number) <= 6))].sort()
+      : null;
+    if (days) patch.earnDays = days;
+    else rejected.push({ field: "earnDays", value: body.earnDays, fallback: "all days" });
+  }
+  for (const key of ["earnStartTime", "earnEndTime"] as const) {
+    if (!provided(key)) continue;
+    if (typeof body[key] === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(body[key] as string)) patch[key] = body[key] as string;
+    else rejected.push({ field: key, value: body[key], fallback: "07:00" });
   }
 
   const outcome = await store.mutate((doc) => {

@@ -20,7 +20,7 @@ import fsSync, { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { BehaviourEntry, FamilySettings, Gender, Level, StorageState, Theme } from "@/lib/types";
+import type { BehaviourEntry, FamilySettings, Gender, Level, RewardLedgerEntry, StorageState, Theme } from "@/lib/types";
 
 /** A storage failure with a message that can be shown to the person using the app. */
 export class StorageError extends Error {
@@ -52,10 +52,13 @@ export type ParentRecord = {
 export type ActivityRecord = {
   id: string;
   at: number;
-  kind: "answer" | "screen-time" | "cheer" | "device" | "level";
+  kind: "answer" | "screen-time" | "cheer" | "device" | "level" | "reward";
   text: string;
   correct?: boolean;
 };
+
+/** One stored wallet transaction (shared shape with the UI's RewardLedgerEntry). */
+export type RewardLedgerRecord = RewardLedgerEntry & { parentId: string };
 
 export type KidRecord = {
   id: string;
@@ -74,6 +77,11 @@ export type KidRecord = {
   correct: number;
   requestedMinutes: number;
   approvedMinutes: number;
+  /** Wallet in cents (or whole Robux): earned, not yet realised. Reset only on parent approval. */
+  walletBalanceMinor?: number;
+  requestedRewardMinor?: number;
+  lifetimeEarnedMinor?: number;
+  totalRealisedMinor?: number;
   createdAt: number;
   lastSeenAt: number | null;
   activity: ActivityRecord[];
@@ -187,6 +195,8 @@ export type DbDoc = {
   nextEventId: number;
   /** Parent ↔ child chat threads (newest last). */
   chats: ChatRecord[];
+  /** Every reward transaction for every child: earned, requested, approved, declined (newest last). */
+  rewards: RewardLedgerRecord[];
   /** Master settings per parent account (time zone, date/time format, language, voice). */
   settings: Record<string, FamilySettings>;
   /** The behavioural log: everything the app noticed about itself, newest last. */
@@ -220,6 +230,7 @@ export function emptyDoc(): DbDoc {
     events: [],
     nextEventId: 0,
     chats: [],
+    rewards: [],
     settings: {},
     behaviour: [],
     nextBehaviourId: 0,
@@ -239,6 +250,13 @@ export function normaliseDoc(doc: DbDoc): DbDoc {
   doc.events ??= [];
   doc.nextEventId ??= 0;
   doc.chats ??= [];
+  doc.rewards ??= [];
+  for (const kid of doc.kids) {
+    kid.walletBalanceMinor ??= 0;
+    kid.requestedRewardMinor ??= 0;
+    kid.lifetimeEarnedMinor ??= 0;
+    kid.totalRealisedMinor ??= 0;
+  }
   doc.settings ??= {};
   doc.behaviour ??= [];
   doc.nextBehaviourId ??= doc.behaviour.reduce((max, entry) => Math.max(max, entry.id ?? 0), 0);
@@ -957,6 +975,17 @@ export function tombstoneKid(doc: DbDoc, kidId: string, now = Date.now()) {
 /** True when a parent deleted this child (used before restoring a device link). */
 export function isKidDeleted(doc: DbDoc, kidId: string): boolean {
   return (doc.deletedKids ?? []).some((row) => row.id === kidId);
+}
+
+/** How many reward transactions are kept across all families in this store. */
+export const MAX_REWARDS = 2_000;
+
+/** Adds one wallet transaction, keeping the newest MAX_REWARDS entries. */
+export function appendReward(doc: DbDoc, entry: RewardLedgerRecord): RewardLedgerRecord {
+  doc.rewards = doc.rewards ?? [];
+  doc.rewards.push(entry);
+  if (doc.rewards.length > MAX_REWARDS) doc.rewards.splice(0, doc.rewards.length - MAX_REWARDS);
+  return entry;
 }
 
 /** Adds a chat message, keeping the newest MAX_CHAT messages across the family. */

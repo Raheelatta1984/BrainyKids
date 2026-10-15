@@ -1,10 +1,13 @@
 import { newToken, tokenHash } from "./auth";
 import { HEARTBEAT_MS } from "./constants";
-import { appendChat, newId, pushEvent, type ChatRecord, type DbDoc, type DeviceRecord, type KidRecord, type ParentRecord } from "./store";
-import { addActivity, MAX_CHAT_CHARS, markChatSeen } from "./views";
+import { recordBehaviour } from "./diagnostics";
+import { appendChat, appendReward, newId, pushEvent, type ChatRecord, type DbDoc, type DeviceRecord, type KidRecord, type ParentRecord } from "./store";
+import { addActivity, earnedSums, MAX_CHAT_CHARS, markChatSeen } from "./views";
 import type { Gender, Level, Theme } from "@/lib/types";
 import { QUESTIONS } from "@/lib/quiz-data";
-import { levelQuestionCount, matchesAnswer, tracksForAge } from "@/lib/quiz-logic";
+import { answerScorePercent, levelQuestionCount, matchesAnswer, tierForLevel, tracksForAge } from "@/lib/quiz-logic";
+import { resolveSettings } from "@/lib/settings";
+import { difficultyForQuestion, earningAllowedAt, formatReward, rewardForScore, timeLimitSeconds } from "@/lib/rewards";
 
 export type CreateKidInput = {
   name: string;
@@ -38,6 +41,10 @@ export function createKidRecord(doc: DbDoc, parentId: string, input: CreateKidIn
     correct: 0,
     requestedMinutes: 0,
     approvedMinutes: 0,
+    walletBalanceMinor: 0,
+    requestedRewardMinor: 0,
+    lifetimeEarnedMinor: 0,
+    totalRealisedMinor: 0,
     createdAt: Date.now(),
     lastSeenAt: null,
     activity: [],
@@ -93,24 +100,56 @@ export type AnswerResult = {
   unlockedLevel: Level;
   levelFinished: boolean;
   duplicate: boolean;
+  /** How close the answer was (0–100) and the real-money/Robux reward it earned. */
+  scorePercent: number;
+  earnedMinor: number;
+  walletBalanceMinor: number;
+  rewardKind: "money" | "robux";
+  currency: string;
+  timedOut: boolean;
+  /** Why a near answer earned nothing, when it otherwise would have. */
+  rewardBlocked: "timeout" | "schedule" | "daily-limit" | "weekly-limit" | null;
 };
 
+/** Earned-so-far sums from the ledger, in the family's time zone (today + this Mon–Sun week). */
+function earnedSumsFromLedger(doc: DbDoc, kid: KidRecord): { today: number; week: number } {
+  const sums = earnedSums(doc, kid);
+  return { today: sums.today, week: sums.week };
+}
+
 /**
- * Records an answer. Correctness is decided on the server from the question
- * bank so a device cannot simply claim points.
+ * Records an answer. Correctness, closeness, the timer and the reward are all
+ * decided on the server from the question bank and the family's Master
+ * settings, so a device cannot simply claim money.
  */
-export function recordAnswer(doc: DbDoc, kid: KidRecord, questionId: string, picked: string, level: Level): AnswerResult | null {
+export function recordAnswer(
+  doc: DbDoc,
+  kid: KidRecord,
+  questionId: string,
+  picked: string,
+  level: Level,
+  options: { elapsedSeconds?: number } = {},
+): AnswerResult | null {
   const question = QUESTIONS.find((q) => q.id === questionId);
   if (!question) return null;
-  if (question.level !== level) return null;
-  // Levels still locked for this child cannot be answered, so points cannot be farmed early.
+  if (question.level !== tierForLevel(level)) return null;
+  // Levels still locked for this child cannot be answered, so rewards cannot be farmed early.
   if (level > kid.unlockedLevel) return null;
   if (!tracksForAge(kid.age).includes(question.track)) return null;
+  const settings = resolveSettings(doc.settings?.[kid.parentId]);
   const key = String(level);
   const used = kid.usedByLevel[key] ?? [];
   const duplicate = used.includes(questionId);
-  const correct = matchesAnswer(picked, question.answer) || picked.trim() === question.answer;
 
+  const limitSeconds = timeLimitSeconds(settings, difficultyForQuestion(question));
+  // Elapsed is measured on the kid device at the moment of answering, so no
+  // network grace is needed — only a small allowance for the timer tick.
+  const timedOut = typeof options.elapsedSeconds === "number" && options.elapsedSeconds >= limitSeconds - 0.5;
+  const scorePercent = duplicate || timedOut ? 0 : answerScorePercent(picked, question.answer);
+  const correct = !timedOut && (matchesAnswer(picked, question.answer) || picked.trim() === question.answer);
+
+  let earnedMinor = 0;
+  let rewardBlocked: AnswerResult["rewardBlocked"] = null;
   if (!duplicate) {
     kid.usedByLevel = { ...kid.usedByLevel, [key]: [...used, questionId] };
     kid.attempted += 1;
@@ -119,8 +158,75 @@ export function recordAnswer(doc: DbDoc, kid: KidRecord, questionId: string, pic
     addActivity(kid, {
       kind: "answer",
       correct,
-      text: correct ? `Correct · ${question.topic}` : `Tried · ${question.topic}`,
+      text: timedOut ? `Time up · ${question.topic}` : correct ? `Correct · ${question.topic}` : `Tried · ${question.topic}`,
     });
+
+    // Real reward: full amount for 100%, 80% at 90%+ (50c → 40c), less below.
+    earnedMinor = rewardForScore(scorePercent, settings.maxRewardPerQuestionMinor);
+    if (earnedMinor > 0) {
+      if (timedOut) {
+        rewardBlocked = "timeout";
+        earnedMinor = 0;
+      } else if (!earningAllowedAt(settings)) {
+        rewardBlocked = "schedule";
+        earnedMinor = 0;
+      } else {
+        const sums = earnedSumsFromLedger(doc, kid);
+        if (settings.dailyEarnLimitMinor > 0) {
+          const remaining = settings.dailyEarnLimitMinor - sums.today;
+          if (remaining <= 0) rewardBlocked = "daily-limit";
+          earnedMinor = Math.min(earnedMinor, Math.max(0, remaining));
+        }
+        if (earnedMinor > 0 && settings.weeklyEarnLimitMinor > 0) {
+          const remaining = settings.weeklyEarnLimitMinor - sums.week;
+          if (remaining <= 0) rewardBlocked = "weekly-limit";
+          earnedMinor = Math.min(earnedMinor, Math.max(0, remaining));
+        }
+      }
+    }
+    if (earnedMinor > 0) {
+      kid.walletBalanceMinor = (kid.walletBalanceMinor ?? 0) + earnedMinor;
+      kid.lifetimeEarnedMinor = (kid.lifetimeEarnedMinor ?? 0) + earnedMinor;
+      appendReward(doc, {
+        id: newId(),
+        parentId: kid.parentId,
+        kidId: kid.id,
+        at: Date.now(),
+        type: "earned",
+        amountMinor: earnedMinor,
+        kind: settings.rewardKind,
+        currency: settings.currency,
+        balanceAfterMinor: kid.walletBalanceMinor,
+        questionId,
+        topic: question.topic,
+        level,
+        scorePercent,
+      });
+      addActivity(kid, {
+        kind: "reward",
+        correct: true,
+        text: `Earned ${formatReward(earnedMinor, settings.rewardKind, settings.currency)} · ${question.topic} (${scorePercent}%)`,
+      });
+      pushEvent(doc, {
+        type: "reward.earned",
+        parentId: kid.parentId,
+        kidId: kid.id,
+        payload: { kidName: kid.name, amountMinor: earnedMinor, scorePercent, topic: question.topic, balanceMinor: kid.walletBalanceMinor },
+      });
+    } else if (rewardBlocked) {
+      recordBehaviour(
+        doc,
+        {
+          code: rewardBlocked === "timeout" ? "quiz.timed_out" : "reward.blocked",
+          parentId: kid.parentId,
+          kidId: kid.id,
+          kidName: kid.name,
+          vars: { kidName: kid.name, kidId: kid.id, questionId, level, reason: rewardBlocked, scorePercent },
+          context: { reason: rewardBlocked, scorePercent },
+        },
+        { throttleKey: `${kid.id}:${rewardBlocked}` },
+      );
+    }
   }
   touchKid(kid, true);
 
@@ -130,8 +236,9 @@ export function recordAnswer(doc: DbDoc, kid: KidRecord, questionId: string, pic
     const { total, done } = levelQuestionCount(kid, level);
     if (done >= total) {
       levelFinished = true;
-      if (level < 3 && kid.unlockedLevel <= level) {
-        kid.unlockedLevel = (level + 1) as Level;
+      // Levels never stop: finishing always unlocks the next one (4, 5, … 8+).
+      if (kid.unlockedLevel <= level) {
+        kid.unlockedLevel = level + 1;
         unlockedLevel = kid.unlockedLevel;
         addActivity(kid, { kind: "level", text: `Finished level ${level} and unlocked level ${kid.unlockedLevel}` });
       }
@@ -171,7 +278,116 @@ export function recordAnswer(doc: DbDoc, kid: KidRecord, questionId: string, pic
     unlockedLevel,
     levelFinished,
     duplicate,
+    scorePercent: duplicate ? 0 : scorePercent,
+    earnedMinor,
+    walletBalanceMinor: kid.walletBalanceMinor ?? 0,
+    rewardKind: settings.rewardKind,
+    currency: settings.currency,
+    timedOut,
+    rewardBlocked,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Realise requests: a child asks to cash out the wallet; only a parent's
+// approval resets the balance to zero. Every step is written to the ledger.
+// ---------------------------------------------------------------------------
+
+export function requestRealisation(doc: DbDoc, kid: KidRecord): number {
+  const balance = kid.walletBalanceMinor ?? 0;
+  if (balance <= 0 || (kid.requestedRewardMinor ?? 0) > 0) return 0;
+  const settings = resolveSettings(doc.settings?.[kid.parentId]);
+  kid.requestedRewardMinor = balance;
+  appendReward(doc, {
+    id: newId(),
+    parentId: kid.parentId,
+    kidId: kid.id,
+    at: Date.now(),
+    type: "realise_requested",
+    amountMinor: balance,
+    kind: settings.rewardKind,
+    currency: settings.currency,
+    balanceAfterMinor: balance,
+    note: "Waiting for a parent to approve",
+  });
+  addActivity(kid, { kind: "reward", text: `Asked to realise ${formatReward(balance, settings.rewardKind, settings.currency)}` });
+  pushEvent(doc, {
+    type: "reward.requested",
+    parentId: kid.parentId,
+    kidId: kid.id,
+    payload: { kidName: kid.name, amountMinor: balance },
+  });
+  recordBehaviour(
+    doc,
+    {
+      code: "reward.realise_requested",
+      parentId: kid.parentId,
+      kidId: kid.id,
+      kidName: kid.name,
+      vars: { kidName: kid.name, kidId: kid.id, amount: formatReward(balance, settings.rewardKind, settings.currency) },
+      context: { amountMinor: balance },
+    },
+    { force: true },
+  );
+  return balance;
+}
+
+export function resolveRealisation(doc: DbDoc, kid: KidRecord, action: "approve" | "decline"): number {
+  const amount = kid.requestedRewardMinor ?? 0;
+  if (amount <= 0) return 0;
+  const settings = resolveSettings(doc.settings?.[kid.parentId]);
+  kid.requestedRewardMinor = 0;
+  if (action === "approve") {
+    // Approval is the moment the wallet resets: the money is now the child's.
+    kid.walletBalanceMinor = Math.max(0, (kid.walletBalanceMinor ?? 0) - amount);
+    kid.totalRealisedMinor = (kid.totalRealisedMinor ?? 0) + amount;
+    appendReward(doc, {
+      id: newId(),
+      parentId: kid.parentId,
+      kidId: kid.id,
+      at: Date.now(),
+      type: "realise_approved",
+      amountMinor: amount,
+      kind: settings.rewardKind,
+      currency: settings.currency,
+      balanceAfterMinor: kid.walletBalanceMinor,
+      note: "Approved by a parent — wallet reset",
+    });
+    addActivity(kid, { kind: "reward", text: `Realised ${formatReward(amount, settings.rewardKind, settings.currency)} — wallet reset` });
+  } else {
+    appendReward(doc, {
+      id: newId(),
+      parentId: kid.parentId,
+      kidId: kid.id,
+      at: Date.now(),
+      type: "realise_declined",
+      amountMinor: amount,
+      kind: settings.rewardKind,
+      currency: settings.currency,
+      balanceAfterMinor: kid.walletBalanceMinor ?? 0,
+      note: "Sent back by a parent — balance kept",
+    });
+    addActivity(kid, { kind: "reward", text: `Realise request for ${formatReward(amount, settings.rewardKind, settings.currency)} sent back` });
+  }
+  pushEvent(doc, {
+    type: action === "approve" ? "reward.approved" : "reward.declined",
+    parentId: kid.parentId,
+    kidId: kid.id,
+    payload: { kidName: kid.name, amountMinor: amount, balanceMinor: kid.walletBalanceMinor ?? 0 },
+  });
+  recordBehaviour(
+    doc,
+    {
+      code: action === "approve" ? "reward.realise_approved" : "reward.realise_declined",
+      parentId: kid.parentId,
+      kidId: kid.id,
+      kidName: kid.name,
+      vars: { kidName: kid.name, kidId: kid.id, amount: formatReward(amount, settings.rewardKind, settings.currency) },
+      context: { amountMinor: amount },
+    },
+    { force: true },
+  );
+  return amount;
 }
 
 export function requestScreenTime(doc: DbDoc, kid: KidRecord): number {

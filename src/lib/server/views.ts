@@ -1,5 +1,5 @@
-import { isOnline, type ActivityEntry, type ChatMessage, type FamilySettings, type KidView, type PairingView, type ParentAccount } from "@/lib/types";
-import { resolveSettings } from "@/lib/settings";
+import { isOnline, type ActivityEntry, type ChatMessage, type FamilySettings, type KidView, type LeaderboardEntry, type PairingView, type ParentAccount, type RewardLedgerEntry } from "@/lib/types";
+import { dayKey, resolveSettings } from "@/lib/settings";
 import { MAX_ACTIVITY } from "./constants";
 import type { ChatRecord, DbDoc, KidRecord, PairingRecord, ParentRecord } from "./store";
 
@@ -56,7 +56,56 @@ export function markChatSeen(doc: DbDoc, kidId: string, viewer: "parent" | "kid"
   return changed;
 }
 
+/** Monday (family time zone) of the week containing `ts`, as a day key. */
+function weekStartKey(ts: number, settings: FamilySettings): string {
+  const key = dayKey(ts, settings);
+  const [y, m, d] = key.split("-").map(Number);
+  const weekday = new Date(Date.UTC(y, (m ?? 1) - 1, d ?? 1)).getUTCDay(); // 0=Sun
+  const monday = new Date(Date.UTC(y, (m ?? 1) - 1, (d ?? 1) - ((weekday + 6) % 7)));
+  return monday.toISOString().slice(0, 10);
+}
+
+/** Wallet sums for the dashboard/kid screen: today and this calendar week, in the family's time zone. */
+export function earnedSums(doc: DbDoc, kid: KidRecord, now = Date.now()): { today: number; week: number; ledger: RewardLedgerEntry[] } {
+  const settings = settingsForParent(doc, kid.parentId);
+  const todayKey = dayKey(now, settings);
+  const weekKey = weekStartKey(now, settings);
+  let today = 0;
+  let week = 0;
+  for (const entry of doc.rewards ?? []) {
+    if (entry.kidId !== kid.id || entry.type !== "earned") continue;
+    const key = dayKey(entry.at, settings);
+    if (key === todayKey) today += entry.amountMinor;
+    if (key >= weekKey) week += entry.amountMinor;
+  }
+  const ledger = (doc.rewards ?? [])
+    .filter((entry) => entry.kidId === kid.id)
+    .slice(-20)
+    .reverse()
+    .map(({ parentId: _parentId, ...rest }) => rest);
+  return { today, week, ledger };
+}
+
+/** The family scoreboard: level first (compete on levels), then accuracy, then lifetime earnings. */
+export function leaderboardFor(doc: DbDoc, parentId: string): LeaderboardEntry[] {
+  return doc.kids
+    .filter((kid) => kid.parentId === parentId)
+    .map((kid) => ({
+      kidId: kid.id,
+      name: kid.name,
+      level: kid.level,
+      unlockedLevel: kid.unlockedLevel,
+      correct: kid.correct,
+      attempted: kid.attempted,
+      accuracy: kid.attempted ? Math.round((kid.correct / kid.attempted) * 100) : 0,
+      lifetimeEarnedMinor: kid.lifetimeEarnedMinor ?? 0,
+      points: kid.points,
+    }))
+    .sort((a, b) => b.unlockedLevel - a.unlockedLevel || b.accuracy - a.accuracy || b.lifetimeEarnedMinor - a.lifetimeEarnedMinor || b.correct - a.correct);
+}
+
 export function kidView(doc: DbDoc, kid: KidRecord, now = Date.now(), viewer: "parent" | "kid" = "parent"): KidView {
+  const sums = earnedSums(doc, kid, now);
   return {
     id: kid.id,
     parentId: kid.parentId,
@@ -73,6 +122,13 @@ export function kidView(doc: DbDoc, kid: KidRecord, now = Date.now(), viewer: "p
     correct: kid.correct,
     requestedMinutes: kid.requestedMinutes,
     approvedMinutes: kid.approvedMinutes,
+    walletBalanceMinor: kid.walletBalanceMinor ?? 0,
+    requestedRewardMinor: kid.requestedRewardMinor ?? 0,
+    lifetimeEarnedMinor: kid.lifetimeEarnedMinor ?? 0,
+    totalRealisedMinor: kid.totalRealisedMinor ?? 0,
+    earnedTodayMinor: sums.today,
+    earnedThisWeekMinor: sums.week,
+    rewardLedger: sums.ledger,
     createdAt: kid.createdAt,
     lastSeenAt: kid.lastSeenAt,
     online: isOnline(kid.lastSeenAt, now),

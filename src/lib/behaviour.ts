@@ -290,6 +290,41 @@ export const BEHAVIOUR: Record<string, BehaviourTemplate> = {
     technical: "screen time requested: kidId={kidId} minutes={minutes} pointsSpent={minutes}",
     fix: "Nothing to do; approve or send it back from the dashboard.",
   },
+  "quiz.timed_out": {
+    area: "quiz",
+    severity: "info",
+    layman: "{kidName} ran out of time on a question, so no reward was earned for it.",
+    technical: "question timed out: kidId={kidId} questionId={questionId} level={level} scorePercent={scorePercent}",
+    fix: "Nothing to do. If it happens a lot, give that difficulty more seconds in Master settings (up to 10 minutes).",
+  },
+  "reward.blocked": {
+    area: "quiz",
+    severity: "info",
+    layman: "{kidName} answered well but earned nothing this time ({reason}).",
+    technical: "reward blocked: kidId={kidId} questionId={questionId} level={level} reason={reason} scorePercent={scorePercent}",
+    fix: "Check the daily/weekly earn limits and the earning schedule in Master settings if the family expected a reward.",
+  },
+  "reward.realise_requested": {
+    area: "quiz",
+    severity: "info",
+    layman: "{kidName} asked to realise {amount}.",
+    technical: "realise requested: kidId={kidId} amount={amount}",
+    fix: "Nothing to do; approve or send it back from the child's card on the dashboard. Approval resets the wallet to zero.",
+  },
+  "reward.realise_approved": {
+    area: "quiz",
+    severity: "info",
+    layman: "A parent approved {kidName}'s realise request for {amount}; the wallet was reset.",
+    technical: "realise approved: kidId={kidId} amount={amount}",
+    fix: "Nothing to do. Pay the child outside the app; the transaction is in the wallet log.",
+  },
+  "reward.realise_declined": {
+    area: "quiz",
+    severity: "info",
+    layman: "A parent sent back {kidName}'s realise request for {amount}; the balance was kept.",
+    technical: "realise declined: kidId={kidId} amount={amount}",
+    fix: "Nothing to do. The child keeps the balance and can ask again later.",
+  },
 
   // ----------------------------------------------------------------- settings --
   "settings.updated": {
