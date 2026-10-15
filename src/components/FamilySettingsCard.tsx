@@ -240,9 +240,10 @@ export default function FamilySettingsCard({
         <fieldset className="settings-group">
           <legend>💰 Rewards — real money in any world currency, or Robux</legend>
           <p className="muted small">
-            A perfect (100%) answer earns the full amount below. A 90%+ near answer earns 80% of it — for example{" "}
-            {formatReward(draft.maxRewardPerQuestionMinor, draft.rewardKind, draft.currency)} →{" "}
-            {formatReward(Math.round(draft.maxRewardPerQuestionMinor * 0.8), draft.rewardKind, draft.currency)}. Money sits in the
+            Every correct answer earns the full amount below — for example{" "}
+            {formatReward(draft.maxRewardPerQuestionMinor, draft.rewardKind, draft.currency)}. A wrong or timed-out answer takes
+            off half of that ({formatReward(Math.floor(draft.maxRewardPerQuestionMinor * 0.5), draft.rewardKind, draft.currency)}),
+            never below zero. Money sits in the
             child&apos;s wallet until they ask to realise it and you approve — only then does the wallet reset to zero. Every earn,
             request and approval is written to the child&apos;s transaction log.
           </p>
@@ -287,12 +288,12 @@ export default function FamilySettingsCard({
           )}
           {draft.rewardKind === "robux" && (
             <p className="muted small">
-              Robux is Roblox&apos;s own currency. A perfect answer earns whole Robux, and the amounts below are
+              Robux is Roblox&apos;s own currency. A correct answer earns whole Robux, and the amounts below are
               counted in Robux — the app is the ledger, and a parent pays the child in Robux outside the app.
             </p>
           )}
           <label>
-            Reward for a perfect answer — {formatReward(draft.maxRewardPerQuestionMinor, draft.rewardKind, draft.currency)}
+            Reward for each correct answer — {formatReward(draft.maxRewardPerQuestionMinor, draft.rewardKind, draft.currency)}
             <input
               type="number"
               min={0}

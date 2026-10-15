@@ -104,15 +104,12 @@ in **Master settings**:
 | --- | --- | --- |
 | Earn | Real money | …or **Robux** (Roblox's own currency), if the family prefers that |
 | Currency | AUD | **Every currency in the world** — all 159 ISO 4217 currencies, common ones listed first (AUD, USD, GBP, EUR, INR, PKR, AED, JPY, KWD…) — with the currency's real decimals, so `A$0.50`, `¥50` (yen has no cents) and `KWD 0.050` (three decimals) all read correctly. **Cryptocurrency is never offered**, and a crypto code is refused by the server even if one is sent by hand — a reward a child cannot hold is not a reward |
-| Reward for a perfect answer | 50 (cents / Robux) | A 100% answer earns this in full |
+| Reward for each correct answer | 5 (cents / Robux) = A$0.05 | Every correct answer earns this in full. A wrong or timed-out answer takes 50% of it off the wallet (2 cents, rounded down), never below zero |
 | Daily / weekly earn limit | A$2.00 / A$10.00 (0 = no limit) | Caps how much can be earned per day and per Mon–Sun week |
 | Earning schedule | Off | Optionally only earn on chosen weekdays between two times (family time zone) |
 | Question timers | Easy 120s · Medium 300s · Hard 600s | Every question counts down; harder questions get more time, never more than 10 minutes. Timing out earns nothing for that question |
 
-Rewards are **proportional to how close the answer is**, decided on the server:
-100% earns the full amount (50c), 90%+ earns 80% of it (40c of 50c), 75%+ earns
-50%, 50%+ earns 25%, and under 50% earns nothing. Numeric answers are scored by
-proximity, word answers by similarity, so a near miss still earns something.
+Rewards are **flat per correct answer**, decided on the server: every correct\nanswer earns the full amount (A$0.05 / 5 cents by default, or the equal amount in\nthe family's currency or Robux). A **wrong or timed-out answer deducts 50% of that\namount** (2 cents, rounded down, since half a cent cannot be stored) from the\nwallet, and the wallet never drops below zero. The deduction is a `deducted`\nentry in the transaction log.
 
 The money collects in the child's **wallet**. When the child taps *Ask a parent
 to realise…*, the request goes to the parent live. The wallet is **only reset

@@ -274,18 +274,21 @@ export function currencyExample(code: string): string {
 }
 
 /**
- * How much of the maximum reward a score earns. A perfect answer earns the
- * full amount the parent set (50c by default); a 90%+ near miss earns 80%
- * (40c of 50c); closer-but-not-close earns less, and under 50% earns nothing.
+ * What a correct answer earns: the flat per-question amount the parent set
+ * (5 cents / 5 Robux by default, i.e. A$0.05). Every correct answer earns the
+ * same amount, so a child always knows what one right answer is worth.
  */
-export function rewardForScore(scorePercent: number, maxRewardMinor: number): number {
-  const score = Math.max(0, Math.min(100, scorePercent));
-  const max = Math.max(0, Math.round(maxRewardMinor));
-  if (score >= 100) return max;
-  if (score >= 90) return Math.round(max * 0.8);
-  if (score >= 75) return Math.round(max * 0.5);
-  if (score >= 50) return Math.round(max * 0.25);
-  return 0;
+export function correctAnswerRewardMinor(maxRewardMinor: number): number {
+  return Math.max(0, Math.round(maxRewardMinor));
+}
+
+/**
+ * What a wrong (or timed-out) answer takes off the wallet: 50% of the
+ * per-question amount. 5 cents → 2 cents. Half a cent cannot be stored, so the
+ * amount rounds down, which keeps the penalty small and the child motivated.
+ */
+export function wrongAnswerDeductionMinor(maxRewardMinor: number): number {
+  return Math.floor(Math.max(0, Math.round(maxRewardMinor)) * 0.5);
 }
 
 /** Question difficulty drives the per-question timer. */

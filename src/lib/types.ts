@@ -106,7 +106,7 @@ export type RewardLedgerEntry = {
   id: string;
   kidId: string;
   at: number;
-  type: "earned" | "realise_requested" | "realise_approved" | "realise_declined";
+  type: "earned" | "deducted" | "realise_requested" | "realise_approved" | "realise_declined";
   /** Amount in cents (or whole Robux). */
   amountMinor: number;
   kind: "money" | "robux";

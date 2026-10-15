@@ -718,10 +718,12 @@ function KidCard({
           <ul>
             {kid.rewardLedger.slice(0, 10).map((entry) => (
               <li key={entry.id}>
-                <span className="activity-icon">{entry.type === "earned" ? "🪙" : entry.type === "realise_approved" ? "✅" : entry.type === "realise_declined" ? "↩️" : "🙋"}</span>
+                <span className="activity-icon">{entry.type === "earned" ? "🪙" : entry.type === "deducted" ? "➖" : entry.type === "realise_approved" ? "✅" : entry.type === "realise_declined" ? "↩️" : "🙋"}</span>
                 <span>
                   {entry.type === "earned"
                     ? `Earned ${formatReward(entry.amountMinor, entry.kind, entry.currency)}${entry.topic ? ` · ${entry.topic}` : ""}${typeof entry.scorePercent === "number" ? ` · ${entry.scorePercent}%` : ""}`
+                    : entry.type === "deducted"
+                      ? `Took off ${formatReward(entry.amountMinor, entry.kind, entry.currency)}${entry.topic ? ` · ${entry.topic}` : ""}${entry.note ? ` · ${entry.note}` : ""}`
                     : entry.type === "realise_requested"
                       ? `Asked to realise ${formatReward(entry.amountMinor, entry.kind, entry.currency)}`
                       : entry.type === "realise_approved"

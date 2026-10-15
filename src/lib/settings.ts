@@ -20,12 +20,13 @@ export const DEFAULT_SETTINGS: FamilySettings = {
   kidVoiceOver: true,
   parentVoiceOver: false,
   kidDictation: true,
-  // Rewards: A$0.50 for a perfect answer (40c at 90%+), A$2/day and A$10/week
+  // Rewards: A$0.05 for every correct answer, and 50% of that (2c, rounded down)
+  // comes off the wallet for a wrong or timed-out answer. A$2/day and A$10/week
   // caps until a parent changes them. Easy questions get 2 minutes, medium 5,
   // hard 10 — the maximum the timer ever allows.
   rewardKind: "money",
   currency: "AUD",
-  maxRewardPerQuestionMinor: 50,
+  maxRewardPerQuestionMinor: 5,
   dailyEarnLimitMinor: 200,
   weeklyEarnLimitMinor: 1000,
   earnScheduleEnabled: false,

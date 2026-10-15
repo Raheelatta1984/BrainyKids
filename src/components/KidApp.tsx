@@ -327,7 +327,7 @@ function LevelPicker({
   const levels = levelWindow(kid);
   const resume = levelToResume(kid);
   const best = Math.max(1, kid.unlockedLevel);
-  const latestRealise = kid.rewardLedger.find((entry) => entry.type !== "earned");
+  const latestRealise = kid.rewardLedger.find((entry) => entry.type.startsWith("realise_"));
 
   /**
    * Opens a level. `start` carries on where the child stopped in it (that is
