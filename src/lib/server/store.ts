@@ -69,8 +69,15 @@ export type KidRecord = {
   age: number;
   gender: Gender;
   theme: Theme;
+  /** Where the child is now. Any level may be opened; nothing is ever locked. */
   level: Level;
+  /** Highest level reached by finishing one: the “Best level” record, not a gate. */
   unlockedLevel: Level;
+  /**
+   * The question ids already answered in each level, keyed by level number.
+   * This is what makes “resume” work (only unanswered questions are asked) and
+   * what “restart” clears — for that one level only.
+   */
   usedByLevel: Record<string, string[]>;
   points: number;
   attempted: number;

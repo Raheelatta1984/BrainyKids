@@ -89,16 +89,16 @@ the parent's phone and the log all use the family's own date, time and language.
 Every behavioural log line records the settings that were in force when it was
 written, so a review can see the world as the family saw it.
 
-### Rewards: real money or Robux, per-question timers, endless levels
+### Rewards: real money in any currency, or Robux
 
-Alongside screen time, children now earn **actual money in the family's local
+Alongside screen time, children now earn **actual money in the family's own
 currency — or Robux** — for answering questions. All of it is set by the parent
 in **Master settings**:
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Earn | Real money | …or Robux (Roblox), if the family prefers that |
-| Currency | AUD | Australian dollar, US dollar, pound, euro, rupee and more (shown with real decimals, e.g. A$0.50 — amounts are stored as integer cents, never floats) |
+| Earn | Real money | …or **Robux** (Roblox's own currency), if the family prefers that |
+| Currency | AUD | **Every currency in the world** — all 159 ISO 4217 currencies, common ones listed first (AUD, USD, GBP, EUR, INR, PKR, AED, JPY, KWD…) — with the currency's real decimals, so `A$0.50`, `¥50` (yen has no cents) and `KWD 0.050` (three decimals) all read correctly. **Cryptocurrency is never offered**, and a crypto code is refused by the server even if one is sent by hand — a reward a child cannot hold is not a reward |
 | Reward for a perfect answer | 50 (cents / Robux) | A 100% answer earns this in full |
 | Daily / weekly earn limit | A$2.00 / A$10.00 (0 = no limit) | Caps how much can be earned per day and per Mon–Sun week |
 | Earning schedule | Off | Optionally only earn on chosen weekdays between two times (family time zone) |
@@ -118,11 +118,41 @@ child's **transaction log** on the dashboard and to the behavioural log
 (`reward.*`, `quiz.timed_out`). Parents pay the child outside the app; the app
 is the ledger, not a bank.
 
-**Levels never end.** Finishing a level always unlocks the next one — Level 4,
-5, … 8 and beyond (the bank's three difficulty tiers map onto them, so higher
-levels ask the hardest questions). Both the kid screen and the parent dashboard
-show a family **scoreboard** ranked by level, then accuracy, then lifetime
-earnings, so children can compete on “I'm on Level 8!”.
+**Levels never end, and no level is ever locked.** A child can open any level,
+in any order — Level 1, Level 40, back to Level 3 — whether or not earlier
+levels were finished. Nothing is refused for being “too high”, nothing is blocked
+because an earlier level is unfinished, and no child is ever stuck one level
+behind with no way forward.
+
+On the level screen every level carries one of three buttons:
+
+| The level | What the button says | What happens |
+| --- | --- | --- |
+| never opened | **▶ Start** | the level opens at its first question |
+| half finished | **▶ Carry on** | **resume** — only the questions not answered yet are asked, so the child picks up exactly where they stopped |
+| finished | **↺ Play again** | the child replays it; finishing it again is fine |
+
+A **“Carry on where you stopped”** banner sits at the top of the level screen
+whenever a level is unfinished, and **↺ Start again** on any level that has
+answers in it begins that one level from its first question. Starting a level
+again never touches points, screen time or money, and it is written to the
+behavioural log (`quiz.level_restarted`) so a parent can see it happened. Because
+a restarted level asks its questions again, a child can earn for them again — the
+daily and weekly earn limits still apply, and the log says when it happened. The
+box under the level list (*Go to level …*) reaches any level number, so a child
+who wants to explore ahead — or a parent steering from the dashboard — is never
+stopped.
+
+Because levels are open, **`unlockedLevel` is a record, not a key**: it is the
+child's **Best level**, and it moves on when a level is finished (the same
+number the scoreboard ranks by). The dashboard can move a child to any level, or
+start a chosen level again, from the child's card.
+
+The question bank's three difficulty tiers map onto levels (higher levels ask
+the hardest questions), and a track that stops earlier drops back to its hardest
+tier, so even the youngest children always have questions on every level. Both
+the kid screen and the parent dashboard show a family **scoreboard** ranked by
+best level, then accuracy, then lifetime earnings.
 
 ### Chat and voice over
 
@@ -155,7 +185,9 @@ Children aged 4 and under get early questions. Older children get a mix of
 selective-style and NAPLAN-style questions. A question is never repeated within
 the same level for the same child. Answers are marked **on the server** from the
 question bank (with a 90%-similarity match for typed or spoken answers), so a
-browser cannot award itself points, and questions in locked levels are refused.
+browser cannot award itself points, and a question can only be counted against the
+level it belongs to (every level is open, so nothing is refused for being
+“locked”).
 Each question runs against its timer (see *Rewards* above); the server checks
 the elapsed time itself, so a timed-out question cannot earn a reward.
 
@@ -234,7 +266,10 @@ npm start
 ```
 
 `npm run selftest` exercises the fingerprint / face unlock verification without a
-browser, `npm run reset-password -- <email> "<new password>"` resets a parent
+browser, `npm run levels-selftest` checks that no level is ever locked (any
+level answers, resume keeps progress, restart clears only that level) and that
+every world currency is offered while cryptocurrency is refused,
+`npm run reset-password -- <email> "<new password>"` resets a parent
 password straight from the command line (see *Signing in* above), and
 `npm run behaviour:report` rebuilds the review report from the behavioural log
 (see *Behavioural log* below).
@@ -279,10 +314,12 @@ device, the parent's phone and any other device that signs in.
 | `GET /api/events` | Server-Sent Events stream (realtime) |
 | `POST /api/kids`, `PATCH|DELETE /api/kids/<id>` | Child profiles |
 | `POST /api/kids/<id>/screen-time`, `/cheer` | Approve/decline/gift minutes, send a message |
+| `PATCH /api/kids/<id>` | Edit a child, move them to **any** level (`level`), or start one level again (`restartLevel`) |
 | `DELETE /api/devices/<id>` | Sign a kid device out remotely |
 | `POST /api/pairing/start`, `GET /api/pairing/status` | Kid device asks for a code and waits |
 | `GET /api/pairing/lookup`, `POST /api/pairing/approve` | Parent checks the code and links the device |
-| `POST /api/kid-session/login`, `/logout`, `/heartbeat`, `/answers`, `/screen-time`, `/level` | Kid device session and quiz traffic |
+| `POST /api/kid-session/login`, `/logout`, `/heartbeat`, `/answers`, `/screen-time` | Kid device session and quiz traffic |
+| `POST /api/kid-session/level` | Open any level: `{ "level": 5 }` carries on where the child stopped, `{ "level": 5, "action": "restart" }` starts that level again. Never refused for being ahead of the child's best level |
 | `GET|PATCH /api/settings` | Master settings: time zone, date/time format, language, voice |
 | `POST /api/kids/<id>/chat`, `/api/kid-session/chat` | Parent ↔ child chat (send, and mark the other side's messages as read) |
 | `POST /api/diagnostics` | A browser sending what it noticed to the behavioural log |

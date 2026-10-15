@@ -5,6 +5,7 @@
 // a log line written in a browser are stamped the same way.
 
 import type { DateFormat, FamilySettings, LocaleCode, TimeFormat } from "./types";
+import { sanitiseCurrency } from "./rewards";
 
 export const DEFAULT_SETTINGS: FamilySettings = {
   timeZone: "",
@@ -93,8 +94,8 @@ export function resolveSettings(input?: Partial<FamilySettings> | null): FamilyS
       typeof input.parentVoiceOver === "boolean" ? input.parentVoiceOver : DEFAULT_SETTINGS.parentVoiceOver,
     kidDictation: typeof input.kidDictation === "boolean" ? input.kidDictation : DEFAULT_SETTINGS.kidDictation,
     rewardKind: input.rewardKind === "robux" ? "robux" : "money",
-    currency:
-      typeof input.currency === "string" && /^[A-Z]{3}$/.test(input.currency) ? input.currency : DEFAULT_SETTINGS.currency,
+    // Any ISO currency code is kept (JPY, KWD…), cryptocurrency never is.
+    currency: sanitiseCurrency(input.currency, DEFAULT_SETTINGS.currency),
     maxRewardPerQuestionMinor: clampInt(input.maxRewardPerQuestionMinor, DEFAULT_SETTINGS.maxRewardPerQuestionMinor, 0, 100_000),
     dailyEarnLimitMinor: clampInt(input.dailyEarnLimitMinor, DEFAULT_SETTINGS.dailyEarnLimitMinor, 0, 10_000_000),
     weeklyEarnLimitMinor: clampInt(input.weeklyEarnLimitMinor, DEFAULT_SETTINGS.weeklyEarnLimitMinor, 0, 10_000_000),

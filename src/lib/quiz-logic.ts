@@ -2,15 +2,33 @@ import { QUESTIONS, type Question, type Track } from "./quiz-data";
 import type { Level, QuestionTier } from "./types";
 
 /**
+ * The highest level number the app accepts. Levels never end, but the number
+ * itself stays sane so a typo cannot ask for Level 100000.
+ */
+export const MAX_LEVEL = 999;
+
+const ALL_TRACKS: Track[] = ["early", "selective", "naplan"];
+
+function hasQuestions(tier: QuestionTier, tracks: Track[]): boolean {
+  return QUESTIONS.some((q) => q.level === tier && tracks.includes(q.track));
+}
+
+/**
  * Maps an endless progression level onto the bank's three difficulty tiers.
  * Levels 1–3 are the tiers themselves; every level after that replays the
  * hardest tier (fresh to that level, because answers are tracked per level),
  * so a child on Level 8 is answering hard questions, not Level-1 ones again.
+ *
+ * A track that stops earlier drops back to the hardest tier it actually has
+ * (the early questions for the youngest children stop at tier 2), so every
+ * level still has questions for every age instead of opening an empty level.
  */
-export function tierForLevel(level: Level): QuestionTier {
-  if (level <= 1) return 1;
-  if (level === 2) return 2;
-  return 3;
+export function tierForLevel(level: Level, tracks: Track[] = ALL_TRACKS): QuestionTier {
+  const wanted: QuestionTier = level <= 1 ? 1 : level === 2 ? 2 : 3;
+  for (let tier = wanted; tier > 1; tier--) {
+    if (hasQuestions(tier as QuestionTier, tracks)) return tier as QuestionTier;
+  }
+  return 1;
 }
 
 /** Friendly rank names that keep growing past the old Level-3 ceiling. */
@@ -40,7 +58,7 @@ export function tracksForAge(age: number): Track[] {
 export function nextQuestion(kid: QuizKid): Question | null {
   const tracks = tracksForAge(kid.age);
   const used = new Set(kid.usedByLevel[String(kid.level)] ?? []);
-  const tier = tierForLevel(kid.level);
+  const tier = tierForLevel(kid.level, tracks);
   const pool = QUESTIONS.filter((q) => q.level === tier && tracks.includes(q.track) && !used.has(q.id));
   if (pool.length === 0) return null;
   return pool[Math.floor(Math.random() * pool.length)];
@@ -48,10 +66,59 @@ export function nextQuestion(kid: QuizKid): Question | null {
 
 export function levelQuestionCount(kid: QuizKid, level: Level): { total: number; done: number } {
   const tracks = tracksForAge(kid.age);
-  const tier = tierForLevel(level);
+  const tier = tierForLevel(level, tracks);
   const total = QUESTIONS.filter((q) => q.level === tier && tracks.includes(q.track)).length;
   const done = (kid.usedByLevel[String(level)] ?? []).length;
   return { total, done: Math.min(done, total) };
+}
+
+/** How far through one level a child is: what the level picker shows on each card. */
+export type LevelProgress = {
+  level: Level;
+  total: number;
+  done: number;
+  percent: number;
+  status: "not-started" | "in-progress" | "complete";
+};
+
+export function levelProgress(kid: QuizKid, level: Level): LevelProgress {
+  const { total, done } = levelQuestionCount(kid, level);
+  const status: LevelProgress["status"] = total === 0 || done === 0 ? "not-started" : done >= total ? "complete" : "in-progress";
+  return { level, total, done, percent: total === 0 ? 0 : Math.round((done / total) * 100), status };
+}
+
+/**
+ * Every level the child has started but not finished, highest first — the
+ * levels a “Carry on” button can offer and the levels a parent can see are
+ * waiting. Because no level is blocked, a child who wandered off to another
+ * level always finds the unfinished one still here.
+ */
+export function unfinishedLevels(kid: QuizKid): LevelProgress[] {
+  const candidates = new Set<number>();
+  for (const key of Object.keys(kid.usedByLevel ?? {})) {
+    const level = Number(key);
+    if (Number.isInteger(level) && level >= 1) candidates.add(level);
+  }
+  candidates.add(Math.max(1, kid.level));
+  return [...candidates]
+    .sort((a, b) => b - a)
+    .map((level) => levelProgress(kid, level))
+    .filter((progress) => progress.status === "in-progress");
+}
+
+/** The level worth offering as “Carry on”: where the child was, else the newest unfinished one. */
+export function levelToResume(kid: QuizKid): LevelProgress | null {
+  const current = levelProgress(kid, kid.level);
+  if (current.status === "in-progress") return current;
+  return unfinishedLevels(kid)[0] ?? null;
+}
+
+/** The window of level numbers the picker shows: around the child, inside 1…MAX_LEVEL. */
+export function levelWindow(kid: QuizKid, size = 2): Level[] {
+  const centre = Math.max(1, Math.min(MAX_LEVEL, kid.level, kid.unlockedLevel));
+  const first = Math.max(1, Math.min(kid.level, centre) - size);
+  const last = Math.min(MAX_LEVEL, centre + 1);
+  return Array.from({ length: last - first + 1 }, (_, i) => first + i);
 }
 
 // Similarity from 0 to 1 based on Levenshtein distance, ignoring case, spaces and punctuation.

@@ -6,6 +6,7 @@ import type {
   BehaviourSummary,
   FamilySettings,
   KidView,
+  LevelAction,
   LiveEvent,
   ParentAccount,
   Snapshot,
@@ -114,6 +115,20 @@ export type AnswerResult = {
   rewardBlocked: "timeout" | "schedule" | "daily-limit" | "weekly-limit" | null;
 };
 
+/** What the server did when a level was opened on the kid device. */
+export type LevelResponse = {
+  level: {
+    level: number;
+    action: LevelAction;
+    total: number;
+    done: number;
+    cleared: number;
+    wasComplete: boolean;
+    unlockedLevel: number;
+  };
+  kid: KidView | null;
+};
+
 export type PasskeyStatus = { parent: number; kid: number; hasAny: boolean };
 
 export type StorageHealth = {
@@ -175,7 +190,13 @@ export const actions = {
   requestRealisation: () => api.post<{ amountMinor: number; kid: KidView | null }>("/api/kid-session/rewards"),
   rewardDecision: (id: string, action: "approve" | "decline") =>
     api.post<{ amountMinor: number; kid: KidView | null }>(`/api/kids/${id}/rewards`, { action }),
-  setLevel: (level: number) => api.post<{ kid: KidView | null }>("/api/kid-session/level", { level }),
+  /**
+   * Opens a level on the kid device. Every level is open: `start` carries on
+   * where the child stopped in that level, `restart` begins that one level again
+   * from its first question (points and money are untouched).
+   */
+  setLevel: (level: number, action: LevelAction = "start") =>
+    api.post<LevelResponse>("/api/kid-session/level", { level, action }),
 
   /** Master settings: date, time, language, voice over. */
   settings: () => api.get<{ settings: FamilySettings }>("/api/settings"),

@@ -3,12 +3,21 @@
 export type Gender = "boy" | "girl" | "prefer-not-to-say";
 export type Theme = "space" | "jungle" | "robots" | "dinos";
 /**
- * A child's progression level. Levels never stop: finishing a level always
- * unlocks the next one (Level 4, 5, … 8 and beyond). The question bank's
- * difficulty tiers (1–3, see `Question.level`) are mapped onto progression
- * levels by `tierForLevel` in quiz-logic.ts.
+ * A child's progression level. Levels never stop (Level 4, 5, … 8 and beyond)
+ * and no level is ever blocked: a child can open any level, go back to an
+ * unfinished one and carry on where they left off, or start one again from the
+ * beginning. The question bank's difficulty tiers (1–3, see `Question.level`)
+ * are mapped onto progression levels by `tierForLevel` in quiz-logic.ts.
  */
 export type Level = number;
+
+/**
+ * What a child (or a parent) asked to do with a level:
+ *  - `start`   — open the level and resume whatever is still unanswered,
+ *  - `restart` — start that one level again from its first question.
+ * Neither is ever refused: progress in other levels, points and money are kept.
+ */
+export type LevelAction = "start" | "restart";
 
 /** Difficulty tier of a bank question (1 = easiest … 3 = hardest). */
 export type QuestionTier = 1 | 2 | 3;
@@ -214,7 +223,12 @@ export type KidView = {
   age: number;
   gender: Gender;
   theme: Theme;
+  /** The level the child was last working on (any level can be opened). */
   level: Level;
+  /**
+   * The highest level the child has reached by finishing one — a record shown
+   * as “Best level”, never a key: it does not gate any level.
+   */
   unlockedLevel: Level;
   usedByLevel: Record<string, string[]>;
   points: number;

@@ -1,8 +1,9 @@
 import type { NextRequest } from "next/server";
 import { hashSecret, isValidPin, isValidUsername, normaliseUsername } from "@/lib/server/auth";
 import { error, json, num, readBody, route, str } from "@/lib/server/http";
+import { MAX_LEVEL } from "@/lib/quiz-logic";
 import { parentAuth } from "@/lib/server/session";
-import { findKidByUsername } from "@/lib/server/service";
+import { findKidByUsername, openLevel } from "@/lib/server/service";
 import { recordBehaviour } from "@/lib/server/diagnostics";
 import { pushEvent, store, tombstoneKid } from "@/lib/server/store";
 import { isId, kidView } from "@/lib/server/views";
@@ -35,9 +36,21 @@ export const PATCH = route(async (req: NextRequest, ctx: Ctx) => {
     if (body.age !== undefined) kid.age = Math.min(18, Math.max(3, num(body.age, kid.age)));
     if (typeof body.gender === "string" && GENDERS.includes(body.gender as Gender)) kid.gender = body.gender as Gender;
     if (typeof body.theme === "string" && THEMES.includes(body.theme as Theme)) kid.theme = body.theme as Theme;
+    // A parent can move their child to any level. No level is ever blocked, so
+    // this is not refused for being ahead of the child's best level, and it
+    // keeps the answers already given in that level (the child resumes).
     if (body.level !== undefined) {
       const level = num(body.level, kid.level);
-      if (level >= 1 && level <= kid.unlockedLevel) kid.level = level as Level;
+      if (Number.isInteger(level) && level >= 1 && level <= MAX_LEVEL) {
+        openLevel(doc, kid, level as Level, "start");
+      }
+    }
+    // Start one level again from its first question (points and money are kept).
+    if (body.restartLevel !== undefined) {
+      const level = num(body.restartLevel, kid.level);
+      if (Number.isInteger(level) && level >= 1 && level <= MAX_LEVEL) {
+        openLevel(doc, kid, level as Level, "restart");
+      }
     }
     if (typeof body.username === "string") {
       const username = normaliseUsername(body.username);
@@ -50,9 +63,11 @@ export const PATCH = route(async (req: NextRequest, ctx: Ctx) => {
       if (!isValidPin(body.pin)) return { ok: false as const, reason: "pin" as const };
       kid.pinHash = hashSecret(body.pin.trim());
     }
+    // The child's “best level” record. It no longer gates anything, so a parent
+    // may correct it up or down without trapping the child on a level.
     if (typeof body.unlockedLevel !== "undefined") {
       const unlocked = num(body.unlockedLevel, kid.unlockedLevel);
-      if (unlocked >= 1 && unlocked <= 999 && unlocked >= kid.level) kid.unlockedLevel = unlocked as Level;
+      if (Number.isInteger(unlocked) && unlocked >= 1 && unlocked <= MAX_LEVEL) kid.unlockedLevel = unlocked as Level;
     }
 
     pushEvent(doc, {
