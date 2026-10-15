@@ -2,11 +2,12 @@ import type { NextRequest } from "next/server";
 import { hashSecret, isValidPin, isValidUsername, normaliseUsername } from "@/lib/server/auth";
 import { error, json, num, readBody, route, str } from "@/lib/server/http";
 import { MAX_LEVEL } from "@/lib/quiz-logic";
+import { educationGradeCountry, isCurriculumCountry, isEducationStage } from "@/lib/curriculum";
 import { parentAuth } from "@/lib/server/session";
 import { findKidByUsername, openLevel } from "@/lib/server/service";
 import { recordBehaviour } from "@/lib/server/diagnostics";
 import { pushEvent, store, tombstoneKid } from "@/lib/server/store";
-import { isId, kidView } from "@/lib/server/views";
+import { isId, kidView, settingsForParent } from "@/lib/server/views";
 import type { Gender, Level, Theme } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -35,6 +36,25 @@ export const PATCH = route(async (req: NextRequest, ctx: Ctx) => {
     }
     if (body.age !== undefined) kid.age = Math.min(18, Math.max(3, num(body.age, kid.age)));
     if (typeof body.gender === "string" && GENDERS.includes(body.gender as Gender)) kid.gender = body.gender as Gender;
+    if (body.curriculumCountry !== undefined) {
+      if (body.curriculumCountry === null || body.curriculumCountry === "") kid.curriculumCountry = null;
+      else if (isCurriculumCountry(body.curriculumCountry)) kid.curriculumCountry = body.curriculumCountry;
+      else return { ok: false as const, reason: "curriculum-country" as const };
+    }
+    if (body.educationStage !== undefined) {
+      if (body.educationStage === null || body.educationStage === "") kid.educationStage = null;
+      else if (isEducationStage(body.educationStage)) kid.educationStage = body.educationStage;
+      else return { ok: false as const, reason: "education-stage" as const };
+    }
+    const masterSettings = settingsForParent(doc, kid.parentId);
+    const effectiveCountry = kid.curriculumCountry ?? masterSettings.curriculumCountry;
+    const gradeCountry = educationGradeCountry(kid.educationStage ?? "");
+    if (body.educationStage !== undefined && gradeCountry && gradeCountry !== effectiveCountry) {
+      return { ok: false as const, reason: "education-stage" as const };
+    }
+    if (body.curriculumCountry !== undefined && gradeCountry && gradeCountry !== effectiveCountry && body.educationStage === undefined) {
+      kid.educationStage = null;
+    }
     if (typeof body.theme === "string" && THEMES.includes(body.theme as Theme)) kid.theme = body.theme as Theme;
     // A parent can move their child to any level. No level is ever blocked, so
     // this is not refused for being ahead of the child's best level, and it
@@ -86,6 +106,8 @@ export const PATCH = route(async (req: NextRequest, ctx: Ctx) => {
       username: "Kid username must be 3–20 letters, numbers, dots or underscores.",
       taken: "That kid username is already taken.",
       pin: "Kid PIN must be 4–6 digits.",
+      "curriculum-country": "Choose a supported curriculum country or inherit the family setting.",
+      "education-stage": "Choose a supported education stage or inherit the family setting.",
     };
     return error(messages[outcome.reason] ?? "Could not update the profile.", outcome.reason === "not-found" ? 404 : 400);
   }

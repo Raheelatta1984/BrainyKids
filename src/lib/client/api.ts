@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { Question } from "@/lib/quiz-data";
 import type {
   BehaviourEntry,
   BehaviourSummary,
@@ -183,6 +184,11 @@ export const actions = {
   kidLogout: (parentPassword: string) => api.post<{ ok: true }>("/api/kid-session/logout", { parentPassword }),
   /** Says whether this device is still linked. A network error is NOT a sign-out. */
   heartbeat: () => api.post<HeartbeatResponse>("/api/kid-session/heartbeat"),
+  nextQuestion: (level: number) =>
+    api.post<{ question: Question | null; progress: { level: number; total: number; done: number; percent: number; status: "not-started" | "in-progress" | "complete" } }>(
+      "/api/kid-session/questions/next",
+      { level },
+    ),
   answer: (questionId: string, picked: string, level: number, elapsedSeconds = 0) =>
     api.post<{ result: AnswerResult; kid: KidView | null }>("/api/kid-session/answers", { questionId, picked, level, elapsedSeconds }),
   requestScreenTime: () => api.post<{ minutes: number }>("/api/kid-session/screen-time"),

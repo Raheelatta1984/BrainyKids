@@ -1,4 +1,5 @@
 import { QUESTIONS, type Question, type Track } from "./quiz-data";
+import { QUESTIONS_PER_LEVEL } from "./question-engine";
 import type { Level, QuestionTier } from "./types";
 
 /**
@@ -47,6 +48,7 @@ export type QuizKid = {
   level: Level;
   unlockedLevel: Level;
   usedByLevel: Record<string, string[]>;
+  askedQuestionIds?: string[];
 };
 
 // Ages 4 and under get only the early track. Older kids get a mix of selective and NAPLAN-style questions.
@@ -57,18 +59,17 @@ export function tracksForAge(age: number): Track[] {
 // Returns a random question for this kid's level that they have not answered yet, or null when the level is finished.
 export function nextQuestion(kid: QuizKid): Question | null {
   const tracks = tracksForAge(kid.age);
-  const used = new Set(kid.usedByLevel[String(kid.level)] ?? []);
+  const used = new Set([...(kid.askedQuestionIds ?? []), ...(kid.usedByLevel[String(kid.level)] ?? [])]);
   const tier = tierForLevel(kid.level, tracks);
   const pool = QUESTIONS.filter((q) => q.level === tier && tracks.includes(q.track) && !used.has(q.id));
   if (pool.length === 0) return null;
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+/** A fixed number of freshly generated questions per run, at every age/stage. */
 export function levelQuestionCount(kid: QuizKid, level: Level): { total: number; done: number } {
-  const tracks = tracksForAge(kid.age);
-  const tier = tierForLevel(level, tracks);
-  const total = QUESTIONS.filter((q) => q.level === tier && tracks.includes(q.track)).length;
-  const done = (kid.usedByLevel[String(level)] ?? []).length;
+  const total = QUESTIONS_PER_LEVEL;
+  const done = new Set(kid.usedByLevel[String(level)] ?? []).size;
   return { total, done: Math.min(done, total) };
 }
 

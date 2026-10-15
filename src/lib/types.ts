@@ -2,12 +2,37 @@
 
 export type Gender = "boy" | "girl" | "prefer-not-to-say";
 export type Theme = "space" | "jungle" | "robots" | "dinos";
+export type CurriculumCountry = "AU" | "GB" | "US" | "IN" | "PK" | "EU" | "NZ";
+type Grade1to12 = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
+type Grade1to13 = Grade1to12 | 13;
+export type EducationGrade =
+  | "AU-Foundation"
+  | `AU-Year-${Grade1to12}`
+  | "GB-Reception"
+  | `GB-Year-${Grade1to13}`
+  | "US-Kindergarten"
+  | `US-Grade-${Grade1to12}`
+  | `IN-Class-${Grade1to12}`
+  | `PK-Class-${Grade1to12}`
+  | `EU-Primary-${1 | 2 | 3 | 4 | 5 | 6}`
+  | `EU-Secondary-${1 | 2 | 3 | 4 | 5 | 6 | 7}`
+  | `NZ-Year-${Grade1to13}`;
+export type EducationStage =
+  | "auto"
+  | "early-years"
+  | "primary"
+  | "middle-school"
+  | "secondary"
+  | "o-level"
+  | "a-level"
+  | EducationGrade;
+export type QuestionLanguage = LocaleCode | "same";
 /**
  * A child's progression level. Levels never stop (Level 4, 5, … 8 and beyond)
  * and no level is ever blocked: a child can open any level, go back to an
  * unfinished one and carry on where they left off, or start one again from the
- * beginning. The question bank's difficulty tiers (1–3, see `Question.level`)
- * are mapped onto progression levels by `tierForLevel` in quiz-logic.ts.
+ * beginning. Generated questions use a difficulty tier (1–3, see
+ * `Question.level`) influenced by the child's education stage and level.
  */
 export type Level = number;
 
@@ -19,7 +44,7 @@ export type Level = number;
  */
 export type LevelAction = "start" | "restart";
 
-/** Difficulty tier of a bank question (1 = easiest … 3 = hardest). */
+/** Difficulty tier used for question pacing (1 = easiest … 3 = hardest). */
 export type QuestionTier = 1 | 2 | 3;
 
 /** Languages a family can pick as their master language (app text, questions and voice). */
@@ -36,8 +61,16 @@ export type TimeFormat = "auto" | "12" | "24";
 export type FamilySettings = {
   /** IANA time zone, for example “Australia/Sydney”. Empty means “the device's zone”. */
   timeZone: string;
-  /** Master language: app text, quiz questions/tasks and the spoken voice. */
+  /** Master language for app text, dates, messages and voice. */
   locale: LocaleCode;
+  /** Language used for quiz questions; "same" follows the master language. */
+  questionLanguage: QuestionLanguage;
+  /** Show the question in the app language as well when a different quiz language is selected. */
+  showQuestionTranslation: boolean;
+  /** Default curriculum for the family; a child's profile may override either choice. */
+  curriculumCountry: CurriculumCountry;
+  /** Default school stage; "auto" selects an age-appropriate stage for each child. */
+  educationStage: EducationStage;
   dateFormat: DateFormat;
   timeFormat: TimeFormat;
   /** Read chat messages and quiz feedback aloud on the kid device. */
@@ -222,6 +255,10 @@ export type KidView = {
   username: string;
   age: number;
   gender: Gender;
+  /** Null means inherit the family master curriculum setting. */
+  curriculumCountry: CurriculumCountry | null;
+  /** Null means inherit the family master education-stage setting. */
+  educationStage: EducationStage | null;
   theme: Theme;
   /** The level the child was last working on (any level can be opened). */
   level: Level;

@@ -67,24 +67,29 @@ parent and kid sign-in, QR device linking and realtime progress updates.
 - **Changing the password** from the dashboard signs out every other device and
   replaces the recovery code.
 
-### Master settings (date, time, language, voice)
+### Master settings (language, curriculum, date, time, voice)
 
-The dashboard has a **Settings** tab. One set of choices governs the whole app:
+The dashboard has a **Settings** tab. Family-wide defaults are independent of
+where the family lives, and each child can inherit them or use a learning-profile
+override from **Edit child**:
 
 | Setting | What it changes |
 | --- | --- |
-| Time zone | every date and time: activity, chat, the behavioural log, the review report |
-| Date format | `DD/MM/YYYY`, `MM/DD/YYYY`, `YYYY-MM-DD` or “follow the language” |
-| Time format | 12-hour, 24-hour or “follow the language” |
-| Language | the child's screen, chat labels, spoken questions and answers |
-| Voice over | whether chat and questions are read aloud, and whether children may answer by speaking |
-| Read new messages aloud | whether a device speaks incoming chat as it arrives |
+| App language | App labels, chat, voice and behavioural-log wording |
+| Question language | Follow the app language or practise in English, Spanish, French, Arabic, Urdu, Hindi or Chinese |
+| Question translation | Optionally show the question and choices in the app language alongside the selected question language |
+| Curriculum country | Australia, United Kingdom, United States, India, Pakistan, Europe / International or New Zealand; this changes spelling, currency and measurement contexts |
+| Grade / education stage | Country-specific year/class/grade choices (e.g. Pakistan Class 1–12, India Class 1–12, US Kindergarten / Grade 1–12, Australian Foundation / Year 1–12), plus age-based, Early years, Primary, Middle school, Secondary, O-Level / GCSE and A-Level |
+| Time zone / date / time | Dates and times in activity, chat, the behavioural log and review report |
+| Voice over | Read questions and messages aloud, and allow a child to answer by speaking |
 
-The languages offered are English, Spanish, French, Arabic, Urdu, Hindi and
-Chinese, each with its own speech voice and its own translation of the question
-bank (`src/lib/quiz-i18n.ts`). Arabic and Urdu flip the child's screen to
-right-to-left. The same settings are stored on the server, so the child's tablet,
-the parent's phone and the log all use the family's own date, time and language.
+A parent in Pakistan can, for example, set the question curriculum to the United
+Kingdom or Australia, or select India / Pakistan with Cambridge O-Level or
+A-Level practice. Automatic stage uses the child's age; a parent can override
+the country and stage for one child without changing siblings. Arabic and Urdu
+flip the app screen to right-to-left. Hindi questions are translated, and a
+separate question-language choice lets a child practise Hindi while the app
+stays in English (or vice versa).
 
 Every behavioural log line records the settings that were in force when it was
 written, so a review can see the world as the family saw it.
@@ -116,7 +121,10 @@ step — each amount earned (with its question, topic, level and closeness %),
 each realise request, each approval and each send-back — is written to the
 child's **transaction log** on the dashboard and to the behavioural log
 (`reward.*`, `quiz.timed_out`). Parents pay the child outside the app; the app
-is the ledger, not a bank.
+is the ledger, not a bank. A declined payout goes back to the child's ready-to-
+request wallet state with the full balance intact. Screen-time requests work the
+same way: points stay available while a request is pending and are deducted only
+on approval; sending one back restores the child's request button and points.
 
 **Levels never end, and no level is ever locked.** A child can open any level,
 in any order — Level 1, Level 40, back to Level 3 — whether or not earlier
@@ -128,31 +136,27 @@ On the level screen every level carries one of three buttons:
 
 | The level | What the button says | What happens |
 | --- | --- | --- |
-| never opened | **▶ Start** | the level opens at its first question |
-| half finished | **▶ Carry on** | **resume** — only the questions not answered yet are asked, so the child picks up exactly where they stopped |
-| finished | **↺ Play again** | the child replays it; finishing it again is fine |
+| never opened | **▶ Start** | the level opens with a fresh question |
+| half finished | **▶ Carry on** | resume the active question and then continue with unseen questions |
+| finished | **↺ Play again** | a new run uses fresh questions; old questions are never reused |
 
 A **“Carry on where you stopped”** banner sits at the top of the level screen
-whenever a level is unfinished, and **↺ Start again** on any level that has
-answers in it begins that one level from its first question. Starting a level
-again never touches points, screen time or money, and it is written to the
-behavioural log (`quiz.level_restarted`) so a parent can see it happened. Because
-a restarted level asks its questions again, a child can earn for them again — the
-daily and weekly earn limits still apply, and the log says when it happened. The
-box under the level list (*Go to level …*) reaches any level number, so a child
-who wants to explore ahead — or a parent steering from the dashboard — is never
-stopped.
+whenever a level is unfinished. **↺ Start again** clears that level's progress
+and creates a fresh run, but the child's lifetime question history is never
+cleared. A question is not repeated at a later level or after a restart. Restarts
+never touch points, screen time or money and are written to the behavioural log
+(`quiz.level_restarted`). The box under the level list (*Go to level …*) reaches
+any level number, so a child or parent can explore ahead without being stopped.
 
 Because levels are open, **`unlockedLevel` is a record, not a key**: it is the
 child's **Best level**, and it moves on when a level is finished (the same
 number the scoreboard ranks by). The dashboard can move a child to any level, or
 start a chosen level again, from the child's card.
 
-The question bank's three difficulty tiers map onto levels (higher levels ask
-the hardest questions), and a track that stops earlier drops back to its hardest
-tier, so even the youngest children always have questions on every level. Both
-the kid screen and the parent dashboard show a family **scoreboard** ranked by
-best level, then accuracy, then lifetime earnings.
+Question difficulty is generated from the child's age, selected education
+stage and current level, so every child has suitable content even at high levels.
+Both the kid screen and the parent dashboard show a family **scoreboard** ranked
+by best level, then accuracy, then lifetime earnings.
 
 ### Chat and voice over
 
@@ -181,23 +185,30 @@ is down.
 
 ### Question rules
 
-Children aged 4 and under get early questions. Older children get a mix of
-selective-style and NAPLAN-style questions. A question is never repeated within
-the same level for the same child. Answers are marked **on the server** from the
-question bank (with a 90%-similarity match for typed or spoken answers), so a
-browser cannot award itself points, and a question can only be counted against the
-level it belongs to (every level is open, so nothing is refused for being
-“locked”).
-Each question runs against its timer (see *Rewards* above); the server checks
-the elapsed time itself, so a timed-out question cannot earn a reward.
+Each level serves a short set of freshly generated questions from the child's
+age / education stage and selected curriculum. Every question shown is recorded
+in the child's lifetime history, so it cannot be repeated at another level or
+after a restart. Refreshing or returning to an unfinished level resumes its
+active question; restarting discards that active question and issues a new one.
 
-Questions are asked in the family's language (see *Master settings*). The child's
-device shows the translated wording while the server still marks against the
-English canonical answer, so changing language never changes a child's progress or
-lets the browser award points.
+The automatic stage is Early years (age 4 and under), Primary (5–10), Middle
+school (11–13), Secondary (14–16) or A-Level practice (17+). A parent can select
+an explicit stage, including concise O-Level / GCSE or A-Level maths, science and
+English questions. Country selection changes curriculum contexts such as
+Australian / British spelling, US customary units, metric units and local
+currency examples. Question difficulty adapts to the stage and level.
 
-The questions in `src/lib/quiz-data.ts` are original practice questions written in
-selective and NAPLAN style. They are not copies of official tests.
+Questions are inclusive: age and the parent's selected education stage shape
+the content, while gender does not narrow subjects or rely on stereotypes.
+Questions are marked **on the server** from the server-issued active item; a
+browser cannot award itself points or submit an already-used item.
+
+Question language can be selected independently of app language, and a parent
+can show a second-language translation beneath the question. Hindi is available
+for generated questions as well as the existing translated bank. The server
+keeps canonical answers, so translation never changes progress or lets the
+browser award points. Questions and practice material are original; they are not
+copies of official past papers.
 
 ## Behavioural log (kept in this repository)
 
@@ -265,14 +276,13 @@ npm run build
 npm start
 ```
 
-`npm run selftest` exercises the fingerprint / face unlock verification without a
-browser, `npm run levels-selftest` checks that no level is ever locked (any
-level answers, resume keeps progress, restart clears only that level) and that
-every world currency is offered while cryptocurrency is refused,
-`npm run reset-password -- <email> "<new password>"` resets a parent
-password straight from the command line (see *Signing in* above), and
-`npm run behaviour:report` rebuilds the review report from the behavioural log
-(see *Behavioural log* below).
+`npm run selftest` exercises fingerprint / face unlock verification without a
+browser; `npm run levels-selftest` checks open-level progress and world-currency
+rules; and `npm run quiz-selftest` checks non-repeating questions, curricula,
+Hindi translations and returned approval requests. `npm run reset-password --
+<email> "<new password>"` resets a parent password straight from the command line
+(see *Signing in* above), and `npm run behaviour:report` rebuilds the review
+report from the behavioural log (see *Behavioural log* below).
 
 Fingerprint unlock needs a secure address — `https://` or `http://localhost` —
 and cannot run inside an embedded frame, so open the app in its own browser tab
@@ -319,8 +329,9 @@ device, the parent's phone and any other device that signs in.
 | `POST /api/pairing/start`, `GET /api/pairing/status` | Kid device asks for a code and waits |
 | `GET /api/pairing/lookup`, `POST /api/pairing/approve` | Parent checks the code and links the device |
 | `POST /api/kid-session/login`, `/logout`, `/heartbeat`, `/answers`, `/screen-time` | Kid device session and quiz traffic |
-| `POST /api/kid-session/level` | Open any level: `{ "level": 5 }` carries on where the child stopped, `{ "level": 5, "action": "restart" }` starts that level again. Never refused for being ahead of the child's best level |
-| `GET|PATCH /api/settings` | Master settings: time zone, date/time format, language, voice |
+| `POST /api/kid-session/level` | Open any level: `{ "level": 5 }` resumes, `{ "level": 5, "action": "restart" }` starts a fresh run without reusing questions |
+| `POST /api/kid-session/questions/next` | Server issues or resumes the active question for a level |
+| `GET|PATCH /api/settings` | Master settings: language, question language, curriculum country/stage, time zone and voice |
 | `POST /api/kids/<id>/chat`, `/api/kid-session/chat` | Parent ↔ child chat (send, and mark the other side's messages as read) |
 | `POST /api/diagnostics` | A browser sending what it noticed to the behavioural log |
 | `GET /api/diagnostics` | The log back: `?format=json` (dashboard), `?format=md` (report), `?format=jsonl` (download) |

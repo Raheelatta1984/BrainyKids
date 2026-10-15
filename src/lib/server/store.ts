@@ -20,7 +20,8 @@ import fsSync, { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { BehaviourEntry, FamilySettings, Gender, Level, RewardLedgerEntry, StorageState, Theme } from "@/lib/types";
+import type { BehaviourEntry, CurriculumCountry, EducationStage, FamilySettings, Gender, Level, RewardLedgerEntry, StorageState, Theme } from "@/lib/types";
+import type { Question } from "@/lib/quiz-data";
 
 /** A storage failure with a message that can be shown to the person using the app. */
 export class StorageError extends Error {
@@ -68,6 +69,9 @@ export type KidRecord = {
   pinHash: string;
   age: number;
   gender: Gender;
+  /** Optional per-child learning profile; null inherits the family master setting. */
+  curriculumCountry?: CurriculumCountry | null;
+  educationStage?: EducationStage | null;
   theme: Theme;
   /** Where the child is now. Any level may be opened; nothing is ever locked. */
   level: Level;
@@ -75,10 +79,15 @@ export type KidRecord = {
   unlockedLevel: Level;
   /**
    * The question ids already answered in each level, keyed by level number.
-   * This is what makes “resume” work (only unanswered questions are asked) and
-   * what “restart” clears — for that one level only.
+   * This controls level progress and can be cleared for a fresh level run.
    */
   usedByLevel: Record<string, string[]>;
+  /** Every question ever shown to this child, across all levels and restarts. */
+  askedQuestionIds: string[];
+  /** Monotonic question number; never reset when a level is restarted. */
+  nextQuestionSequence: number;
+  /** An unanswered question already shown in each level, so resume never repeats it. */
+  activeQuestionsByLevel: Record<string, Question>;
   points: number;
   attempted: number;
   correct: number;
@@ -259,6 +268,18 @@ export function normaliseDoc(doc: DbDoc): DbDoc {
   doc.chats ??= [];
   doc.rewards ??= [];
   for (const kid of doc.kids) {
+    kid.usedByLevel ??= {};
+    kid.activeQuestionsByLevel ??= {};
+    const answeredHistory = Object.values(kid.usedByLevel).flatMap((ids) => Array.isArray(ids) ? ids : []);
+    const activeHistory = Object.values(kid.activeQuestionsByLevel).map((question) => question?.id).filter((id): id is string => Boolean(id));
+    kid.askedQuestionIds = [...new Set([...(kid.askedQuestionIds ?? []), ...answeredHistory, ...activeHistory])];
+    const highestFreshSequence = kid.askedQuestionIds.reduce((highest, id) => {
+      const match = /^fresh-([0-9a-z]+)$/i.exec(id);
+      return match ? Math.max(highest, Number.parseInt(match[1], 36)) : highest;
+    }, 0);
+    kid.nextQuestionSequence = Math.max(kid.nextQuestionSequence ?? kid.askedQuestionIds.length, highestFreshSequence);
+    kid.curriculumCountry ??= null;
+    kid.educationStage ??= null;
     kid.walletBalanceMinor ??= 0;
     kid.requestedRewardMinor ??= 0;
     kid.lifetimeEarnedMinor ??= 0;

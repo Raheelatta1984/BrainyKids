@@ -6,6 +6,7 @@ import { reportBehaviour } from "@/lib/client/diagnostics";
 import { useToasts, type ToastItem } from "@/lib/client/useToasts";
 import { Leaderboard, THEMES } from "@/components/KidApp";
 import { formatReward } from "@/lib/rewards";
+import { CURRICULUM_COUNTRIES, educationGradeCountry, educationStagesForCountry, curriculumCountryInfo } from "@/lib/curriculum";
 import { MAX_LEVEL, levelTitle, unfinishedLevels } from "@/lib/quiz-logic";
 import BehaviourLogCard from "@/components/BehaviourLogCard";
 import ChatPanel from "@/components/ChatPanel";
@@ -15,6 +16,8 @@ import StorageBanner from "@/components/StorageBanner";
 import { t } from "@/lib/i18n";
 import { formatStamp, formatTimeAgo } from "@/lib/settings";
 import type {
+  CurriculumCountry,
+  EducationStage,
   FamilySettings,
   Gender,
   KidView,
@@ -850,7 +853,7 @@ function KidCard({
 
       {error && <p className="banner error">{error}</p>}
 
-      {editing && <EditKid kid={kid} parentEmail={parentEmail} onDone={() => void live.refresh()} />}
+      {editing && <EditKid kid={kid} parentEmail={parentEmail} settings={settings} onDone={() => void live.refresh()} />}
       {!editing && kid.lastSeenAt && (
         <p className="muted small">
           {kid.online
@@ -862,22 +865,34 @@ function KidCard({
   );
 }
 
-function EditKid({ kid, parentEmail, onDone }: { kid: KidView; parentEmail: string; onDone: () => void }) {
+function EditKid({ kid, parentEmail, settings, onDone }: { kid: KidView; parentEmail: string; settings: FamilySettings; onDone: () => void }) {
   const [name, setName] = useState(kid.name);
   const [age, setAge] = useState(kid.age);
   const [gender, setGender] = useState<Gender>(kid.gender);
+  const [curriculumCountry, setCurriculumCountry] = useState<CurriculumCountry | "">(kid.curriculumCountry ?? "");
+  const [educationStage, setEducationStage] = useState<EducationStage | "">(kid.educationStage ?? "");
   const [theme, setTheme] = useState<Theme>(kid.theme);
   const [username, setUsername] = useState(kid.username);
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const effectiveCountry = curriculumCountry || settings.curriculumCountry;
+  const educationStages = educationStagesForCountry(effectiveCountry);
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError("");
-    const payload: Record<string, unknown> = { name, age, gender, theme, username };
+    const payload: Record<string, unknown> = {
+      name,
+      age,
+      gender,
+      curriculumCountry: curriculumCountry || null,
+      educationStage: educationStages.some((stage) => stage.value === educationStage) ? educationStage || null : null,
+      theme,
+      username,
+    };
     if (pin) payload.pin = pin;
     const result = await actions.updateKid(kid.id, payload);
     setBusy(false);
@@ -909,6 +924,47 @@ function EditKid({ kid, parentEmail, onDone }: { kid: KidView; parentEmail: stri
             <option value="prefer-not-to-say">Prefer not to say</option>
           </select>
         </label>
+        <fieldset className="settings-group">
+          <legend>Learning profile</legend>
+          <p className="muted small">
+            Choose a country-specific grade or inherit the master curriculum. Automatic mode is age-aware; question
+            difficulty is based on age, grade and level, while gender does not introduce stereotypes.
+          </p>
+          <label>
+            Curriculum country
+            <select
+              value={curriculumCountry}
+              onChange={(event) => {
+                const nextCountry = event.target.value as CurriculumCountry | "";
+                const resolvedCountry = nextCountry || settings.curriculumCountry;
+                const currentGradeCountry = educationGradeCountry(educationStage);
+                setCurriculumCountry(nextCountry);
+                if (currentGradeCountry && currentGradeCountry !== resolvedCountry) setEducationStage("");
+              }}
+            >
+              <option value="">Use master setting ({curriculumCountryInfo(settings.curriculumCountry).label})</option>
+              {CURRICULUM_COUNTRIES.map((country) => (
+                <option key={country.code} value={country.code}>
+                  {country.label} · {country.curriculum}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Education stage
+            <select
+              value={educationStages.some((stage) => stage.value === educationStage) ? educationStage : ""}
+              onChange={(event) => setEducationStage(event.target.value as EducationStage | "")}
+            >
+              <option value="">Use master setting</option>
+              {educationStages.map((stage) => (
+                <option key={stage.value} value={stage.value}>
+                  {stage.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </fieldset>
         <label>
           Theme
           <select value={theme} onChange={(event) => setTheme(event.target.value as Theme)}>
