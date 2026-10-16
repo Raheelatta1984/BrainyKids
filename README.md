@@ -66,6 +66,18 @@ parent and kid sign-in, QR device linking and realtime progress updates.
   address and are removed again from the same dashboard card.
 - **Changing the password** from the dashboard signs out every other device and
   replaces the recovery code.
+- **Signup abuse prevention.** The server allows up to 10 signup requests per
+  client address in 15 minutes and up to 3 newly created accounts from that
+  address in a rolling 24 hours. Client-limit responses return HTTP `429` with
+  a `Retry-After` header; the endpoint fails closed with `503` if its bounded
+  tracker is full. Invalid and duplicate attempts count toward the short
+  burst limit; only accounts actually created count toward the daily limit.
+  Client addresses are stored as keyed HMACs, not as raw IP addresses. The
+  deployment proxy must set or sanitise `X-Forwarded-For` / `X-Real-IP`. On a
+  multi-instance deployment, configure `DATABASE_URL` so the limits are shared
+  and atomic across instances. This reduces automated signup spam; it is not a
+  substitute for a WAF/edge rate limit, email verification, or malware scanning,
+  and it cannot stop a distributed denial-of-service attack by itself.
 
 ### Master settings (language, curriculum, date, time, voice)
 
@@ -275,9 +287,10 @@ npm start
 
 `npm run selftest` exercises fingerprint / face unlock verification without a
 browser; `npm run levels-selftest` checks open-level progress and world-currency
-rules; and `npm run quiz-selftest` checks non-repeating questions, curricula,
-Hindi translations and returned approval requests. `npm run reset-password --
-<email> "<new password>"` resets a parent password straight from the command line
+rules; `npm run quiz-selftest` checks non-repeating questions, curricula, Hindi
+translations and returned approval requests; and `npm run signup-selftest`
+checks signup throttling, daily account caps and client-key privacy.
+`npm run reset-password -- <email> "<new password>"` resets a parent password straight from the command line
 (see *Signing in* above), and `npm run behaviour:report` rebuilds the review
 report from the behavioural log (see *Behavioural log* below).
 
