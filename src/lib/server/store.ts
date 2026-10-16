@@ -110,6 +110,13 @@ export type SessionRecord = {
   expiresAt: number;
 };
 
+/** Pseudonymous per-client signup counters; raw network addresses are never stored. */
+export type SignupRateLimitRecord = {
+  key: string;
+  attempts: number[];
+  signups: number[];
+};
+
 export type DeviceRecord = {
   id: string;
   parentId: string;
@@ -203,6 +210,8 @@ export type DbDoc = {
   parents: ParentRecord[];
   kids: KidRecord[];
   sessions: SessionRecord[];
+  /** Signup-attempt and account-creation windows keyed by a server-side HMAC of the client IP. */
+  signupRateLimits: SignupRateLimitRecord[];
   devices: DeviceRecord[];
   pairings: PairingRecord[];
   passkeys: PasskeyRecord[];
@@ -239,6 +248,7 @@ export function emptyDoc(): DbDoc {
     parents: [],
     kids: [],
     sessions: [],
+    signupRateLimits: [],
     devices: [],
     pairings: [],
     passkeys: [],
@@ -259,6 +269,7 @@ export function normaliseDoc(doc: DbDoc): DbDoc {
   doc.parents ??= [];
   doc.kids ??= [];
   doc.sessions ??= [];
+  doc.signupRateLimits ??= [];
   doc.devices ??= [];
   doc.pairings ??= [];
   doc.passkeys ??= [];

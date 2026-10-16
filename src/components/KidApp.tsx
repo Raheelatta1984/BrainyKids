@@ -579,7 +579,7 @@ function Quiz({
   const [listening, setListening] = useState(false);
   const [canListen, setCanListen] = useState(false);
   const [error, setError] = useState("");
-  const startedAt = useRef<number>(Date.now());
+  const startedAt = useRef<number>(0);
   const requestNumber = useRef(0);
   const [secondsLeft, setSecondsLeft] = useState(0);
   const answerRef = useRef<(canonical: string, shown: string) => Promise<void>>(async () => undefined);
@@ -608,8 +608,9 @@ function Quiz({
   }, [level, locale, questionLocale, settings.showQuestionTranslation]);
 
   useEffect(() => {
-    void loadNextQuestion();
+    const start = setTimeout(() => void loadNextQuestion(), 0);
     return () => {
+      clearTimeout(start);
       requestNumber.current += 1;
     };
   }, [loadNextQuestion]);

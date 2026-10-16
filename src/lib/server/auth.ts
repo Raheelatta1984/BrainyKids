@@ -23,6 +23,11 @@ export function tokenHash(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
+/** A stable, keyed pseudonym for values that should not be stored in plain text. */
+export function hashForStorage(purpose: string, value: string): string {
+  return crypto.createHmac("sha256", hmacKey()).update(purpose).update("\0").update(value).digest("hex");
+}
+
 function hmacKey(): Buffer {
   const seed =
     process.env.BRAINYKIDS_SECRET ||
