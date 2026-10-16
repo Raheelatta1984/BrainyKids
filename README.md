@@ -265,6 +265,14 @@ The behaviour-change loop is: read `logs/behaviour-log.md`, fix the 🚨 and ⚠
 groups, add the caught case to the catalogue, then commit the refreshed report
 with the code change.
 
+## Security review and implementation backlog
+
+The [16 October 2026 security review](docs/security/README.md) compares the
+supplied five-check security guide with the code and existing behavioural report.
+Read the [PDF action plan](docs/security/security-review-2026-10-16.pdf) for
+24 open implementation actions, reasons, impacts and acceptance criteria.
+This assessment does not implement the fixes or certify production readiness.
+
 ## Local development
 
 Use a supported Node.js LTS version, such as Node.js 22.
