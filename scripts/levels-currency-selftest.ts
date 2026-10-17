@@ -47,7 +47,7 @@ console.log("\nLevels: every level is open, in any order");
   // A brand-new child (best level 1) can answer Level 40 straight away.
   const far = 40;
   const question = issueNextQuestion(doc, kid, far);
-  const answered = question ? recordAnswer(doc, kid, question.id, question.answer, far, { elapsedSeconds: 0 }) : null;
+  const answered = question ? recordAnswer(doc, kid, question.id, kid.activeQuestionsByLevel[String(far)]?.answer ?? "", far, { elapsedSeconds: 0 }) : null;
   check("a level far above the child's best level can be answered", answered !== null && answered.correct);
   check("nothing was refused for being 'locked'", doc.behaviour.every((line) => line.code !== "quiz.answer_rejected"));
   check("the answer counted against that level only", (kid.usedByLevel[String(far)] ?? []).length === 1);
@@ -58,7 +58,7 @@ console.log("\nLevels: every level is open, in any order");
     while (!done && guard++ < 50) {
       const next = issueNextQuestion(doc, kid, far);
       if (!next) break;
-      recordAnswer(doc, kid, next.id, next.answer, far, { elapsedSeconds: 0 });
+      recordAnswer(doc, kid, next.id, kid.activeQuestionsByLevel[String(far)]?.answer ?? "", far, { elapsedSeconds: 0 });
       done = kid.unlockedLevel === far + 1;
     }
     return done;
@@ -97,7 +97,7 @@ console.log("\nRestart: one level starts again, nothing else is touched");
   const kid = child(doc);
   const level = 1;
   const question = issueNextQuestion(doc, kid, level);
-  if (question) recordAnswer(doc, kid, question.id, question.answer, level, { elapsedSeconds: 0 });
+  if (question) recordAnswer(doc, kid, question.id, kid.activeQuestionsByLevel[String(level)]?.answer ?? "", level, { elapsedSeconds: 0 });
   const pointsBefore = kid.points;
   const walletBefore = kid.walletBalanceMinor ?? 0;
 

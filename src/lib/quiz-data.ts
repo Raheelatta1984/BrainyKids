@@ -41,6 +41,7 @@ export type Question = {
   /** Translation template and interpolated values for generated, curriculum-aware questions. */
   templateKey?: QuestionTemplateKey;
   templateValues?: Record<string, string | number>;
+  issuedAt?: number;
 };
 
 // Original practice questions written in the style of selective and NAPLAN-style tests.

@@ -79,7 +79,6 @@ export const POST = route(async (req: NextRequest) => {
     linked: true,
     kidId: auth.kid.id,
     kidName: auth.kid.name,
-    restored: Boolean(auth.restored),
     durable: store.info().durable,
   });
 });

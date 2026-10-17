@@ -274,7 +274,7 @@ export { DEFAULT_SETTINGS };
 export function behaviourFrom(doc: DbDoc, options: { parentId?: string | null; limit?: number; since?: number } = {}): BehaviourEntry[] {
   const list = doc.behaviour ?? [];
   const filtered = list.filter((entry) => {
-    if (options.parentId && entry.parentId && entry.parentId !== options.parentId) return false;
+    if (options.parentId && entry.parentId !== options.parentId) return false;
     if (options.since && entry.at < options.since) return false;
     return true;
   });

@@ -442,10 +442,10 @@ export function relyingParty(req: Request): RelyingParty {
 
   const rpId = process.env.BRAINYKIDS_RP_ID?.trim() || hostname;
   const origins = new Set<string>(configuredOrigins);
-  if (origin) origins.add(origin.replace(/\/$/, ""));
-  // Older browsers omit Origin on same-origin POSTs; accept the request's own host.
-  origins.add(`https://${host}`);
-  origins.add(`http://${host}`);
+  if (configuredOrigins.length === 0) {
+    origins.add(`https://${host}`);
+    origins.add(`http://${host}`);
+  }
 
   return { rpId, origins: [...origins], host };
 }

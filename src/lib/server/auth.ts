@@ -29,13 +29,14 @@ export function hashForStorage(purpose: string, value: string): string {
 }
 
 function hmacKey(): Buffer {
-  const seed =
-    process.env.BRAINYKIDS_SECRET ||
-    process.env.DATABASE_URL ||
-    process.env.POSTGRES_URL ||
-    process.env.NEON_DATABASE_URL ||
-    "brainykids-serverless-continuity-v1";
-  return crypto.createHash("sha256").update(seed).digest();
+  const seed = process.env.BRAINYKIDS_SECRET;
+  if (!seed) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("BRAINYKIDS_SECRET environment variable is required in production.");
+    }
+    // Only in development, fallback to a local string if not provided
+  }
+  return crypto.createHash("sha256").update(seed || "brainykids-serverless-continuity-v1").digest();
 }
 
 /**

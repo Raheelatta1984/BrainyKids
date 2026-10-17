@@ -88,14 +88,13 @@ async function main() {
     });
     const question = issueNextQuestion(quizDoc, quizKid, 1)!;
     const wireQuestion = JSON.parse(JSON.stringify(question));
-    assert.equal(typeof wireQuestion.answer, "string");
-    assert.equal(typeof wireQuestion.explain, "string");
-    confirmed("next-question result contains canonical answer and explanation before submission");
+    // The answer is no longer sent to the client.
+    assert.equal(typeof (wireQuestion as any).answer, "undefined");
     const originalNow = Date.now;
     const later = originalNow() + 3600000;
     try {
       Date.now = () => later;
-      const result = recordAnswer(quizDoc, quizKid, question.id, question.answer, 1, { elapsedSeconds: 0 });
+      const result = recordAnswer(quizDoc, quizKid, question.id, quizKid.activeQuestionsByLevel["1"]?.answer ?? "", 1, { elapsedSeconds: 0 });
       assert.equal(result?.correct, true);
       assert.equal(result?.timedOut, false);
       confirmed("hour-old question is accepted when client reports elapsedSeconds=0");
