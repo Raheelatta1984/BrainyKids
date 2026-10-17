@@ -161,6 +161,7 @@ function firstNumber(s: string): number | null {
  * (90%+ earns 80% of the maximum — 40c of a 50c question).
  */
 export function answerScorePercent(picked: string, answer: string): number {
+  if (typeof picked !== "string") return 0;
   if (picked.trim() === answer) return 100;
   const pickedNum = firstNumber(picked);
   const answerNum = firstNumber(answer);

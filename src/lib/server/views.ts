@@ -70,8 +70,7 @@ export function markChatSeen(doc: DbDoc, kidId: string, viewer: "parent" | "kid"
   return changed;
 }
 
-/** Monday (family time zone) of the week containing `ts`, as a day key. */
-function weekStartKey(ts: number, settings: FamilySettings): string {
+export function weekStartKey(ts: number, settings: FamilySettings): string {
   const key = dayKey(ts, settings);
   const [y, m, d] = key.split("-").map(Number);
   const weekday = new Date(Date.UTC(y, (m ?? 1) - 1, d ?? 1)).getUTCDay(); // 0=Sun
@@ -84,14 +83,15 @@ export function earnedSums(doc: DbDoc, kid: KidRecord, now = Date.now()): { toda
   const settings = settingsForParent(doc, kid.parentId);
   const todayKey = dayKey(now, settings);
   const weekKey = weekStartKey(now, settings);
+  
   let today = 0;
   let week = 0;
-  for (const entry of doc.rewards ?? []) {
-    if (entry.kidId !== kid.id || entry.type !== "earned") continue;
-    const key = dayKey(entry.at, settings);
-    if (key === todayKey) today += entry.amountMinor;
-    if (key >= weekKey) week += entry.amountMinor;
+  
+  if (kid.earnedAggregates) {
+    if (kid.earnedAggregates.todayKey === todayKey) today = kid.earnedAggregates.todayMinor;
+    if (kid.earnedAggregates.weekKey === weekKey) week = kid.earnedAggregates.weekMinor;
   }
+
   const ledger = (doc.rewards ?? [])
     .filter((entry) => entry.kidId === kid.id)
     .slice(-20)

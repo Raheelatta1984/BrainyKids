@@ -2,6 +2,22 @@ import { NextResponse, type NextRequest } from "next/server";
 import { logBehaviour } from "./diagnostics";
 import { StorageError, store } from "./store";
 
+function isSafeOrigin(req: Request): boolean {
+  const origin = req.headers.get("origin")?.toLowerCase();
+  if (!origin) {
+    const fetchSite = req.headers.get("sec-fetch-site");
+    if (fetchSite && fetchSite !== "same-origin") return false;
+    return true;
+  }
+  const host = (req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "").toLowerCase();
+  try {
+    const originHost = new URL(origin).host;
+    return originHost === host;
+  } catch {
+    return false;
+  }
+}
+
 export function json(data: unknown, init?: ResponseInit) {
   return NextResponse.json(data as Record<string, unknown>, {
     ...init,
@@ -16,14 +32,20 @@ export function error(message: string, status = 400, extra?: Record<string, unkn
 export type Body = Record<string, unknown>;
 
 export async function readBody(req: Request): Promise<Body> {
+  const contentType = req.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    throw new StorageError("Content-Type must be application/json", { status: 415 });
+  }
+  const raw = await req.text();
+  if (!raw) return {};
+  if (raw.length > 64_000) {
+    throw new StorageError("Payload too large", { status: 413 });
+  }
   try {
-    const raw = await req.text();
-    if (!raw) return {};
-    if (raw.length > 64_000) return {};
     const parsed = JSON.parse(raw);
     return typeof parsed === "object" && parsed !== null ? (parsed as Body) : {};
   } catch {
-    return {};
+    throw new StorageError("Invalid JSON", { status: 400 });
   }
 }
 
@@ -38,11 +60,6 @@ export function num(value: unknown, fallback = 0): number {
 
 /**
  * Wraps an API route so an unexpected failure still answers with JSON.
- *
- * Without this a thrown error (for example the storage layer refusing to write)
- * escapes the handler and the browser receives an empty 500 page, which the app
- * can only show as “Something went wrong (500)”. Here the reason is logged on
- * the server and a readable message is returned instead.
  */
 export function route<R extends Request = NextRequest, C = unknown>(
   handler: (req: R, ctx: C) => Promise<Response> | Response,
@@ -50,6 +67,11 @@ export function route<R extends Request = NextRequest, C = unknown>(
   return async (req: R, ctx: C): Promise<Response> => {
     const startedAt = Date.now();
     try {
+      if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
+        if (!isSafeOrigin(req)) {
+          return error("Cross-origin request rejected", 403);
+        }
+      }
       return await handler(req, ctx);
     } catch (cause) {
       const url = req.url ?? "";

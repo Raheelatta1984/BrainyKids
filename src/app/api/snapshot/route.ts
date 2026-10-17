@@ -86,27 +86,6 @@ export const GET = route(async (req: NextRequest) => {
 
   const device = await deviceAuth(req, doc);
   if (device) {
-    if (device.restored) {
-      void logBehaviour(
-        {
-          code: "kid.session.restored",
-          parentId: device.kid.parentId,
-          kidId: device.kid.id,
-          kidName: device.kid.name,
-          deviceId: device.device.id,
-          role: "kid",
-          vars: {
-            deviceId: device.device.id,
-            kidId: device.kid.id,
-            storage: latestStorage.driver,
-            durable: latestStorage.durable,
-            reason: "storage had lost the device record",
-          },
-          context: { storage: latestStorage.driver, durable: latestStorage.durable },
-        },
-        { throttleKey: device.device.id },
-      ).catch(() => undefined);
-    }
     const owner = doc.parents.find((p) => p.id === device.kid.parentId);
     const snapshot: Snapshot = {
       role: "kid",

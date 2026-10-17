@@ -98,6 +98,12 @@ export type KidRecord = {
   requestedRewardMinor?: number;
   lifetimeEarnedMinor?: number;
   totalRealisedMinor?: number;
+  earnedAggregates?: {
+    todayKey: string;
+    todayMinor: number;
+    weekKey: string;
+    weekMinor: number;
+  };
   createdAt: number;
   lastSeenAt: number | null;
   activity: ActivityRecord[];
@@ -430,14 +436,24 @@ export function normaliseDatabaseConfig(rawInput: string): NormalisedDatabaseCon
       host.endsWith(".aivencloud.com");
 
     const sslmode = parsed.searchParams.get("sslmode")?.toLowerCase();
-    if (!sslmode && isCloudHost) {
-      parsed.searchParams.set("sslmode", "require");
-      parsed.searchParams.set("uselibpqcompat", "true");
-    } else if (
-      (sslmode === "require" || sslmode === "prefer" || sslmode === "verify-ca") &&
-      !parsed.searchParams.has("uselibpqcompat")
-    ) {
-      parsed.searchParams.set("uselibpqcompat", "true");
+    
+    if (process.env.NODE_ENV === "production") {
+      if (sslmode === "disable" || sslmode === "allow" || sslmode === "prefer") {
+        throw new Error("Insecure database connections are not allowed in production.");
+      }
+      if (!sslmode || sslmode === "require") {
+        parsed.searchParams.set("sslmode", "verify-full");
+      }
+    } else {
+      if (!sslmode && isCloudHost) {
+        parsed.searchParams.set("sslmode", "require");
+        parsed.searchParams.set("uselibpqcompat", "true");
+      } else if (
+        (sslmode === "require" || sslmode === "prefer" || sslmode === "verify-ca") &&
+        !parsed.searchParams.has("uselibpqcompat")
+      ) {
+        parsed.searchParams.set("uselibpqcompat", "true");
+      }
     }
 
     return {

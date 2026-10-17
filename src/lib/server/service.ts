@@ -2,11 +2,11 @@ import { newToken, tokenHash } from "./auth";
 import { HEARTBEAT_MS } from "./constants";
 import { recordBehaviour } from "./diagnostics";
 import { appendChat, appendReward, newId, pushEvent, type ChatRecord, type DbDoc, type DeviceRecord, type KidRecord, type ParentRecord } from "./store";
-import { addActivity, earnedSums, MAX_CHAT_CHARS, markChatSeen, settingsForKid } from "./views";
+import { addActivity, earnedSums, MAX_CHAT_CHARS, markChatSeen, settingsForKid, weekStartKey } from "./views";
 import type { Gender, Level, LevelAction, Theme } from "@/lib/types";
 import { answerScorePercent, levelProgress, levelQuestionCount, matchesAnswer } from "@/lib/quiz-logic";
 import { generateQuestion } from "@/lib/question-engine";
-import { resolveSettings } from "@/lib/settings";
+import { dayKey, resolveSettings } from "@/lib/settings";
 import { correctAnswerRewardMinor, difficultyForQuestion, earningAllowedAt, formatReward, timeLimitSeconds, wrongAnswerDeductionMinor } from "@/lib/rewards";
 
 export type CreateKidInput = {
@@ -131,7 +131,10 @@ export function issueNextQuestion(doc: DbDoc, kid: KidRecord, level: Level) {
   if (!Number.isInteger(level) || level < 1 || level > 999) return null;
   const key = String(level);
   const active = kid.activeQuestionsByLevel?.[key];
-  if (active) return active;
+  if (active) {
+    const { answer, explain, ...safeQuestion } = active;
+    return safeQuestion;
+  }
 
   const progress = levelQuestionCount(kid, level);
   if (progress.done >= progress.total) return null;
@@ -152,8 +155,11 @@ export function issueNextQuestion(doc: DbDoc, kid: KidRecord, level: Level) {
   }
   kid.nextQuestionSequence = sequence + 1;
   kid.askedQuestionIds.push(question.id);
-  kid.activeQuestionsByLevel = { ...kid.activeQuestionsByLevel, [key]: question };
-  return question;
+  const questionWithTimer = { ...question, issuedAt: Date.now() };
+  kid.activeQuestionsByLevel = { ...kid.activeQuestionsByLevel, [key]: questionWithTimer };
+  
+  const { answer, explain, ...safeQuestion } = questionWithTimer;
+  return safeQuestion;
 }
 
 /**
@@ -179,12 +185,13 @@ export function recordAnswer(
   if (duplicate) return null;
 
   const limitSeconds = timeLimitSeconds(settings, difficultyForQuestion(question));
-  // Elapsed is measured on the kid device at the moment of answering, so no
-  // network grace is needed — only a small allowance for the timer tick.
-  const timedOut = typeof options.elapsedSeconds === "number" && options.elapsedSeconds >= limitSeconds - 0.5;
-  const scorePercent = duplicate || timedOut ? 0 : answerScorePercent(picked, question.answer);
-  const isListedChoice = question.choices.includes(picked.trim());
-  const correct = !timedOut && (isListedChoice ? picked.trim() === question.answer : matchesAnswer(picked, question.answer));
+  // Elapsed is measured on the server using the issuedAt timestamp.
+  const elapsed = question.issuedAt ? (Date.now() - question.issuedAt) / 1000 : 0;
+  const timedOut = elapsed >= limitSeconds;
+  const pickedStr = typeof picked === "string" ? picked : "";
+  const scorePercent = duplicate || timedOut ? 0 : answerScorePercent(pickedStr, question.answer);
+  const isListedChoice = question.choices.includes(pickedStr.trim());
+  const correct = !timedOut && (isListedChoice ? pickedStr.trim() === question.answer : matchesAnswer(pickedStr, question.answer));
 
   let earnedMinor = 0;
   let rewardBlocked: AnswerResult["rewardBlocked"] = null;
@@ -229,6 +236,19 @@ export function recordAnswer(
       rewardBlocked = "timeout";
     }
     if (earnedMinor > 0) {
+      const todayKey = dayKey(Date.now(), settings);
+      const weekKey = weekStartKey(Date.now(), settings);
+      
+      let todayMinor = kid.earnedAggregates?.todayKey === todayKey ? kid.earnedAggregates.todayMinor : 0;
+      let weekMinor = kid.earnedAggregates?.weekKey === weekKey ? kid.earnedAggregates.weekMinor : 0;
+      
+      kid.earnedAggregates = {
+        todayKey,
+        todayMinor: todayMinor + earnedMinor,
+        weekKey,
+        weekMinor: weekMinor + earnedMinor,
+      };
+
       kid.walletBalanceMinor = (kid.walletBalanceMinor ?? 0) + earnedMinor;
       kid.lifetimeEarnedMinor = (kid.lifetimeEarnedMinor ?? 0) + earnedMinor;
       appendReward(doc, {

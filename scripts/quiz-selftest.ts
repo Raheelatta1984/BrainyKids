@@ -45,11 +45,11 @@ console.log("\nFresh questions never repeat across levels or restarts");
 const first = issueNextQuestion(doc, kid, 1);
 const retry = issueNextQuestion(doc, kid, 1);
 check("a retry resumes the already-issued question", first !== null && retry?.id === first.id);
-if (first) recordAnswer(doc, kid, first.id, first.answer, 1, { elapsedSeconds: 0 });
+if (first) recordAnswer(doc, kid, first.id, kid.activeQuestionsByLevel["1"]?.answer ?? "", 1, { elapsedSeconds: 0 });
 const acrossLevels = issueNextQuestion(doc, kid, 2);
 check("a higher level gets a different question ID", first !== null && acrossLevels !== null && first.id !== acrossLevels.id);
 check("a higher level gets different question wording", first !== null && acrossLevels !== null && first.question !== acrossLevels.question);
-if (acrossLevels) recordAnswer(doc, kid, acrossLevels.id, acrossLevels.answer, 2, { elapsedSeconds: 0 });
+if (acrossLevels) recordAnswer(doc, kid, acrossLevels.id, kid.activeQuestionsByLevel["2"]?.answer ?? "", 2, { elapsedSeconds: 0 });
 const countBeforeRestart = kid.askedQuestionIds.length;
 openLevel(doc, kid, 2, "restart");
 const afterRestart = issueNextQuestion(doc, kid, 2);
@@ -76,7 +76,7 @@ check("raising the progression level raises question difficulty", generateQuesti
   curriculumCountry: "PK",
   educationStage: "o-level",
 }).question);
-const hindi = oLevel ? localiseQuestion(oLevel, "hi") : null;
+const hindi = oLevel ? localiseQuestion(oLevel as any, "hi") : null;
 check("generated questions have a Hindi translation", hindi !== null && hindi.translated && hindi.question.startsWith("पहेली"));
 
 const autoDoc = emptyDoc();
