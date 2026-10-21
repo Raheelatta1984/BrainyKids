@@ -19,7 +19,8 @@
 import fsSync, { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
+import { next_id } from "./ids";
 import type { BehaviourEntry, CurriculumCountry, EducationStage, FamilySettings, Gender, Level, RewardLedgerEntry, StorageState, Theme } from "@/lib/types";
 import type { Question } from "@/lib/quiz-data";
 
@@ -317,7 +318,7 @@ export function sessionExpiry(from = Date.now()): number {
 export const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
 export function newId(): string {
-  return randomUUID();
+  return next_id();
 }
 
 // ---------------------------------------------------------------------------
@@ -687,9 +688,63 @@ function postgresDriver(rawConnectionString: string, envVar = "DATABASE_URL"): D
     query: (text: string, values?: unknown[]) => Promise<{ rows: { doc: DbDoc }[] }>;
     connect: () => Promise<ClientLike>;
   };
+  type MemcachedClient = {
+    get: (key: string, callback: (error: Error | null, value: Buffer | null) => void) => void;
+    set: (key: string, value: string, options: { expires: number }, callback: (error: Error | null) => void) => void;
+  };
 
   const config = normaliseDatabaseConfig(rawConnectionString);
+  const readUrl = process.env.DATABASE_READ_URL?.trim() || process.env.POSTGRES_READ_URL?.trim();
+  const readConfig = readUrl ? normaliseDatabaseConfig(readUrl) : null;
+  const memcachedServers = process.env.MEMCACHED_SERVERS?.trim();
+  const memcachedTtl = Math.min(60, Math.max(1, Number.parseInt(process.env.MEMCACHED_TTL_SECONDS ?? "2", 10) || 2));
+  const cacheNamespace = createHash("sha256").update(config.connectionString).digest("hex").slice(0, 16);
+  const cacheKey = process.env.MEMCACHED_KEY?.trim() || `brainykids:state:v1:${cacheNamespace}`;
   let poolPromise: Promise<PoolLike> | null = null;
+  let readPoolPromise: Promise<PoolLike> | null = null;
+  let memcachedPromise: Promise<MemcachedClient | null> | null = null;
+
+  async function createPool(
+    connectionString: string,
+    ensureSchema: boolean,
+    enableChannelBinding = config.enableChannelBinding,
+  ): Promise<PoolLike> {
+    const mod = (await import("pg")) as unknown as {
+      Pool?: new (opts: Record<string, unknown>) => PoolLike;
+      default?: { Pool: new (opts: Record<string, unknown>) => PoolLike };
+    };
+    const PoolCtor = mod.Pool ?? mod.default?.Pool;
+    if (!PoolCtor) throw new Error("pg.Pool unavailable");
+
+    // A pooler URL (e.g. Neon -pooler host / PgBouncer) must be bounded per
+    // serverless instance; transaction locks still run on the writer connection.
+    const pooler = /^(1|true|yes)$/i.test(process.env.PGBOUNCER ?? "") || /pooler/i.test(connectionString);
+    const pgPool = new PoolCtor({
+      connectionString,
+      enableChannelBinding,
+      max: Math.min(10, Math.max(1, Number.parseInt(process.env.PG_POOL_MAX ?? (pooler ? "1" : "3"), 10) || 1)),
+      idleTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 15_000,
+      // Avoid named/prepared statements that are incompatible with PgBouncer transaction pooling.
+      ...(pooler ? { statement_timeout: 30_000 } : {}),
+    });
+
+    if (ensureSchema) {
+      try {
+        await pgPool.query(
+          `create table if not exists brainykids_state (
+             id integer primary key,
+             doc jsonb not null,
+             updated_at timestamptz not null default now()
+           )`,
+        );
+      } catch (err) {
+        const code = (err as { code?: string } | undefined)?.code;
+        if (code !== "23505" && code !== "42P07") throw err;
+      }
+    }
+    return pgPool;
+  }
 
   async function pool(): Promise<PoolLike> {
     if (!config.valid) {
@@ -699,62 +754,87 @@ function postgresDriver(rawConnectionString: string, envVar = "DATABASE_URL"): D
       );
     }
     if (!poolPromise) {
-      poolPromise = (async () => {
-        const mod = (await import("pg")) as unknown as {
-          Pool?: new (opts: Record<string, unknown>) => PoolLike;
-          default?: { Pool: new (opts: Record<string, unknown>) => PoolLike };
-        };
-        const PoolCtor = mod.Pool ?? mod.default?.Pool;
-        if (!PoolCtor) throw new Error("pg.Pool unavailable");
-
-        const pgPool = new PoolCtor({
-          connectionString: config.connectionString,
-          enableChannelBinding: config.enableChannelBinding,
-          // Keep pool small per serverless instance and allow 15s for Neon scale-to-zero wake-up.
-          max: 3,
-          idleTimeoutMillis: 10_000,
-          connectionTimeoutMillis: 15_000,
-        });
-
-        try {
-          await pgPool.query(
-            `create table if not exists brainykids_state (
-               id integer primary key,
-               doc jsonb not null,
-               updated_at timestamptz not null default now()
-             )`,
-          );
-        } catch (err) {
-          const code = (err as { code?: string } | undefined)?.code;
-          // Ignore concurrent `CREATE TABLE IF NOT EXISTS` race across cold lambdas.
-          if (code !== "23505" && code !== "42P07") throw err;
-        }
-        return pgPool;
-      })().catch((error) => {
-        // Let the next request try again instead of caching a dead pool.
+      poolPromise = createPool(config.connectionString, true).catch((error) => {
         poolPromise = null;
         if (error instanceof StorageError) throw error;
         throw new StorageError(describeDatabaseError(error, envVar, config.safeLocation), {
-          detail: `Database ${config.safeLocation} unreachable`,
-          cause: error,
+          detail: `Database ${config.safeLocation} unreachable`, cause: error,
         });
       });
     }
     return poolPromise;
   }
 
+  async function readerPool(): Promise<PoolLike | null> {
+    if (!readConfig) return null;
+    if (!readConfig.valid) throw new StorageError("DATABASE_READ_URL must be a valid Postgres connection string.");
+    if (!readPoolPromise) {
+      readPoolPromise = createPool(readConfig.connectionString, false, readConfig.enableChannelBinding).catch((error) => {
+        readPoolPromise = null;
+        throw error;
+      });
+    }
+    return readPoolPromise;
+  }
+
+  async function memcached(): Promise<MemcachedClient | null> {
+    if (!memcachedServers) return null;
+    if (!memcachedPromise) {
+      memcachedPromise = (async () => {
+        const mod = (await import("memjs")) as unknown as {
+          Client?: { create: (servers: string, options?: Record<string, unknown>) => MemcachedClient };
+          default?: { Client: { create: (servers: string, options?: Record<string, unknown>) => MemcachedClient } };
+        };
+        const create = mod.Client?.create ?? mod.default?.Client.create;
+        if (!create) throw new Error("memjs client unavailable");
+        return create(memcachedServers, {
+          username: process.env.MEMCACHED_USERNAME || process.env.MEMCACHIER_USERNAME,
+          password: process.env.MEMCACHED_PASSWORD || process.env.MEMCACHIER_PASSWORD,
+          timeout: 1,
+          conntimeout: 1,
+        });
+      })().catch((error) => {
+        memcachedPromise = null;
+        console.warn("[brainykids] Memcached unavailable; using Postgres directly.", error);
+        return null;
+      });
+    }
+    return memcachedPromise;
+  }
+
+  async function getCachedDoc(): Promise<DbDoc | null> {
+    try {
+      const client = await memcached();
+      if (!client) return null;
+      const result = await new Promise<Buffer | null>((resolve, reject) => {
+        client.get(cacheKey, (error, value) => error ? reject(error) : resolve(value));
+      });
+      return result ? normaliseDoc(JSON.parse(result.toString("utf8")) as DbDoc) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function cacheDoc(doc: DbDoc): Promise<void> {
+    try {
+      const client = await memcached();
+      if (!client) return;
+      await new Promise<void>((resolve, reject) => {
+        client.set(cacheKey, JSON.stringify(doc), { expires: memcachedTtl }, (error) => error ? reject(error) : resolve());
+      });
+    } catch {
+      // Cache failures must never turn a successful database commit into an error.
+    }
+  }
+
   async function withRetry<T>(operation: () => Promise<T>): Promise<T> {
     try {
       return await operation();
     } catch (firstError) {
-      if (firstError instanceof StorageError && !isTransientDbError(firstError.cause)) {
-        throw firstError;
-      }
-      if (!isTransientDbError(firstError) && !(firstError instanceof StorageError)) {
-        throw firstError;
-      }
-      // Reset the pool and wait briefly in case Neon compute just woke from suspend.
+      if (firstError instanceof StorageError && !isTransientDbError(firstError.cause)) throw firstError;
+      if (!isTransientDbError(firstError) && !(firstError instanceof StorageError)) throw firstError;
       poolPromise = null;
+      readPoolPromise = null;
       await new Promise((resolve) => setTimeout(resolve, 600));
       return await operation();
     }
@@ -764,19 +844,29 @@ function postgresDriver(rawConnectionString: string, envVar = "DATABASE_URL"): D
     name: "postgres",
     cacheTtl: 400,
     async load() {
+      const cached = await getCachedDoc();
+      if (cached) return cached;
       try {
-        return await withRetry(async () => {
-          const db = await pool();
+        const loadFrom = async (db: PoolLike | null) => {
+          if (!db) return null;
           const result = await db.query("select doc from brainykids_state where id = 1");
           return result.rows[0]?.doc ? normaliseDoc(result.rows[0].doc) : null;
-        });
+        };
+        let loaded: DbDoc | null = null;
+        if (readConfig) {
+          try {
+            loaded = await withRetry(async () => loadFrom(await readerPool()));
+          } catch (replicaError) {
+            console.warn("[brainykids] Read replica failed; retrying the primary database.", replicaError);
+          }
+        }
+        if (!loaded) loaded = await withRetry(async () => loadFrom(await pool()));
+        if (loaded) await cacheDoc(loaded);
+        return loaded;
       } catch (error) {
-        throw error instanceof StorageError
-          ? error
-          : new StorageError(describeDatabaseError(error, envVar, config.safeLocation), {
-              detail: "Could not read the database",
-              cause: error,
-            });
+        throw error instanceof StorageError ? error : new StorageError(
+          describeDatabaseError(error, envVar, config.safeLocation), { detail: "Could not read the database", cause: error },
+        );
       }
     },
     async save(doc) {
@@ -789,18 +879,16 @@ function postgresDriver(rawConnectionString: string, envVar = "DATABASE_URL"): D
             [JSON.stringify(doc)],
           );
         });
+        await cacheDoc(doc);
       } catch (error) {
-        throw error instanceof StorageError
-          ? error
-          : new StorageError(describeDatabaseError(error, envVar, config.safeLocation), {
-              detail: "Could not write the database",
-              cause: error,
-            });
+        throw error instanceof StorageError ? error : new StorageError(
+          describeDatabaseError(error, envVar, config.safeLocation), { detail: "Could not write the database", cause: error },
+        );
       }
     },
     async transact<T>(fn: (doc: DbDoc) => T | Promise<T>): Promise<{ doc: DbDoc; result: T }> {
       try {
-        return await withRetry(async () => {
+        const committed = await withRetry(async () => {
           const db = await pool();
           const client = await db.connect();
           let broken = false;
@@ -808,46 +896,34 @@ function postgresDriver(rawConnectionString: string, envVar = "DATABASE_URL"): D
             await client.query("begin");
             await client.query(
               `insert into brainykids_state (id, doc, updated_at) values (1, $1::jsonb, now())
-               on conflict (id) do nothing`,
-              [JSON.stringify(emptyDoc())],
+               on conflict (id) do nothing`, [JSON.stringify(emptyDoc())],
             );
             const locked = await client.query("select doc from brainykids_state where id = 1 for update");
             const current = normaliseDoc(locked.rows[0]?.doc ?? emptyDoc());
             const result = await fn(current);
-            await client.query("update brainykids_state set doc = $1::jsonb, updated_at = now() where id = 1", [
-              JSON.stringify(current),
-            ]);
+            await client.query("update brainykids_state set doc = $1::jsonb, updated_at = now() where id = 1", [JSON.stringify(current)]);
             await client.query("commit");
             return { doc: current, result };
           } catch (txError) {
             broken = isTransientDbError(txError);
-            try {
-              await client.query("rollback");
-            } catch {
-              broken = true;
-            }
+            try { await client.query("rollback"); } catch { broken = true; }
             throw txError;
           } finally {
             client.release(broken);
           }
         });
+        await cacheDoc(committed.doc);
+        return committed;
       } catch (error) {
-        throw error instanceof StorageError
-          ? error
-          : new StorageError(describeDatabaseError(error, envVar, config.safeLocation), {
-              detail: "Could not update the database",
-              cause: error,
-            });
+        throw error instanceof StorageError ? error : new StorageError(
+          describeDatabaseError(error, envVar, config.safeLocation), { detail: "Could not update the database", cause: error },
+        );
       }
     },
     info() {
       return {
-        driver: "postgres",
-        durable: true,
-        location: config.safeLocation,
-        notice: null,
-        envVar,
-        ephemeralHost: false,
+        driver: "postgres", durable: true, location: config.safeLocation, notice: null,
+        envVar, ephemeralHost: false,
       };
     },
   };
@@ -913,7 +989,12 @@ class Store {
 export function getStore(): Store {
   const g = globalThis as unknown as StoreGlobal;
   const resolved = resolveDatabaseEnv();
-  const key = resolved ? `pg:${resolved.envVar}:${resolved.rawUrl}` : `file:${process.env.BRAINYKIDS_DATA_DIR ?? ""}`;
+  const key = JSON.stringify({
+    primary: resolved ? `${resolved.envVar}:${resolved.rawUrl}` : `file:${process.env.BRAINYKIDS_DATA_DIR ?? ""}`,
+    read: process.env.DATABASE_READ_URL ?? process.env.POSTGRES_READ_URL ?? "",
+    cache: process.env.MEMCACHED_SERVERS ?? "",
+    cacheKey: process.env.MEMCACHED_KEY ?? "",
+  });
   if (!g.__brainyKidsStore || g.__brainyKidsStoreKey !== key) {
     g.__brainyKidsStore = new Store(
       resolved ? postgresDriver(resolved.rawUrl, resolved.envVar) : fileDriver(),

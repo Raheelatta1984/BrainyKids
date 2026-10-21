@@ -406,6 +406,44 @@ production branch is `main`, merge the changes into `main` before deploying.
 Redeploying a commit that does not include `src/app` will reproduce the original
 build error described below.
 
+### Scaling the Postgres-backed store
+
+The current store keeps one family-state JSON document in Postgres, so these
+settings add connection/read scaling without changing the persistence model:
+
+- **PgBouncer / Neon pooler:** set `DATABASE_URL` to the pooler's connection
+  string. Set `PGBOUNCER=true` (and optionally `PG_POOL_MAX=1`) for transaction
+  pooling; all state mutations still use a transaction and row lock on the
+  writer. The app does not use named prepared statements. Keep the pooler's
+  transaction mode and session settings compatible with the PostgreSQL provider.
+- **Read replicas:** set `DATABASE_READ_URL` to a read-only replica. Ordinary
+  document reads use it; mutations and read-modify-write transactions always use
+  `DATABASE_URL`. Replication lag is expected, so a just-written document is
+  placed in Memcached when configured; a replica failure falls back to primary.
+- **Memcached:** set `MEMCACHED_SERVERS` to a comma-separated private cache
+  endpoint list; optional SASL credentials are `MEMCACHED_USERNAME` and
+  `MEMCACHED_PASSWORD`. The cache is an expendable read-through cache with a
+  short two-second default TTL (`MEMCACHED_TTL_SECONDS`, capped at 60 seconds),
+  never the source of truth. Cache failures do not fail application reads or
+  database commits. The family document is cached as one item, so deployments
+  should keep it below the Memcached server's item-size limit.
+
+The app has a 64-bit sortable ID generator (`src/lib/server/ids.ts`) with a
+41-bit millisecond timestamp, 13-bit shard reference and 10-bit per-millisecond
+counter. IDs are fixed-width hexadecimal strings, preserving exactness in
+JavaScript and chronological string ordering. Set `BRAINYKIDS_SHARD_ID` to a
+unique value from 0 to 8191 for each concurrently active writer/machine; sharing
+one shard reference across independent processes can still collide, as with any
+Snowflake-style generator. A single-machine deployment defaults to shard 0.
+
+Image routing has an independent 13-bit logical shard space and validated
+machine-map resolver in `src/lib/server/image-shards.ts`. Configure
+`BRAINYKIDS_IMAGE_MACHINE_MAP` as a JSON array of machine IDs, base URLs, and
+non-overlapping `shardRefs`. This keeps logical image locations stable as
+machines are added or rebalanced. The repository does not currently have an
+image upload/object-storage feature; this resolver is the routing layer for an
+image-storage adapter, not a claim that image files are already persisted.
+
 ### Why the original build failed
 
 Next.js needs an `app` or `pages` directory, either at the repository root or
