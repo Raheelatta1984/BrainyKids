@@ -11,12 +11,14 @@
     "levels-selftest": "tsx scripts/levels-currency-selftest.ts",
     "quiz-selftest": "tsx scripts/quiz-selftest.ts",
     "signup-selftest": "tsx scripts/signup-rate-limit-selftest.ts",
+    "scaling-selftest": "tsx scripts/scaling-selftest.ts",
     "behaviour:report": "tsx scripts/behaviour-report.ts",
     "reset-password": "node scripts/reset-password.mjs"
   },
   "dependencies": {
     "dotenv": "17.3.1",
     "drizzle-orm": "0.45.2",
+    "memjs": "^1.3.2",
     "next": "16.4.2",
     "pg": "8.20.0",
     "qrcode": "^1.5.4",
