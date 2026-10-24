@@ -16,16 +16,12 @@ export async function checkPairing(req: NextRequest): Promise<PairingCheck> {
   const credentials = pairingCredentials(req);
   if (!credentials) return { status: "none" };
 
-  const doc = await store.read();
-  const pairing = findPairing(doc, credentials);
+  const found = await store.find("pairingCode", credentials.code);
+  const pairing = found ? findPairing(found.doc, credentials) : null;
   if (!pairing) return { status: "unknown" };
 
   if (pairing.status === "pending") {
     if (pairing.expiresAt > Date.now()) return { status: "pending", pairing };
-    await store.mutate((fresh) => {
-      const stale = findPairing(fresh, credentials);
-      if (stale && stale.status === "pending" && stale.expiresAt <= Date.now()) stale.status = "expired";
-    });
     return { status: "expired" };
   }
 

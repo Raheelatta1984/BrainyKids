@@ -1,8 +1,9 @@
 import type { NextRequest } from "next/server";
-import { deviceLabel, isValidPin, normaliseUsername, verifySecret } from "@/lib/server/auth";
+import { deviceLabel, isValidPin, isValidUsername, normaliseUsername, verifySecret } from "@/lib/server/auth";
 import { error, json, readBody, route, str } from "@/lib/server/http";
 import { logBehaviour } from "@/lib/server/diagnostics";
-import { findKidByUsername, linkDevice } from "@/lib/server/service";
+import { linkDevice } from "@/lib/server/service";
+import { protectIdentity } from "@/lib/server/request-protection";
 import { setDeviceSessionCookies } from "@/lib/server/session";
 import { pushEvent, store } from "@/lib/server/store";
 import { kidView } from "@/lib/server/views";
@@ -17,14 +18,21 @@ export const POST = route(async (req: NextRequest) => {
   const body = await readBody(req);
   const username = normaliseUsername(str(body.username));
   const pin = str(body.pin).trim();
-  if (!username) return error("Enter the kid username.");
+  if (!isValidUsername(username)) return error("Enter a valid kid username.");
   if (!isValidPin(pin)) return error("Enter the 4–6 digit kid PIN.");
+
+  await protectIdentity("kid", username);
+  const candidate = await store.find("kidUsername", username);
+  if (!candidate || !verifySecret(pin, candidate.record.pinHash)) {
+    return error("That username and PIN did not match. Ask a parent to check the kid login.", 401);
+  }
+  const verifiedHash = candidate.record.pinHash;
 
   const label = deviceLabel(req.headers.get("user-agent"));
   const storage = store.info();
   const outcome = await store.mutate((doc) => {
-    const kid = findKidByUsername(doc, username);
-    if (!kid || !verifySecret(pin, kid.pinHash)) return { ok: false as const, token: null, kid: null, device: null };
+    const kid = doc.kids.find((item) => item.id === candidate.record.id && item.username === username);
+    if (!kid || kid.pinHash !== verifiedHash) return { ok: false as const, token: null, kid: null, device: null };
     const { device, token } = linkDevice(doc, kid, label);
     pushEvent(doc, {
       type: "device.linked",

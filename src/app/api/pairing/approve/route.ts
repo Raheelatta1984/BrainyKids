@@ -19,8 +19,11 @@ export const POST = route(async (req: NextRequest) => {
   const body = await readBody(req);
   const code = normaliseCode(str(body.code));
   const kidId = str(body.kidId);
-  if (!code) return error("Enter the code shown on your child's device.");
+  if (!/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{6}$/.test(code)) return error("Enter the code shown on your child's device.");
   if (!isId(kidId)) return error("Choose which child this device belongs to.");
+
+  // Misses are read-only; only a known code proceeds to the primary transaction.
+  if (!(await store.find("pairingCode", code))) return error("That code was not found. Check the code and try again.", 410);
 
   const token = newToken();
   const outcome = await store.mutate((doc) => {

@@ -24,22 +24,17 @@ export const GET = route(async (req: NextRequest) => {
   // Fires at most once per process: permanent vs temporary storage is the root
   // cause of most “kept signing out / information disappeared” reports.
   noteStorageState(store.info());
-  const storage = store.info();
   let doc;
   try {
     doc = await store.read();
   } catch (cause) {
     if (cause instanceof StorageError) {
-      const fallbackSnapshot: Snapshot = {
-        role: "guest",
-        hasAccounts: false,
-        storage: {
-          ...storage,
-          durable: false,
-          notice: cause.userMessage,
-        },
-      };
-      return json(fallbackSnapshot);
+      // A storage outage is not a sign-out. Existing screens keep their last
+      // snapshot and respect Retry-After instead of switching back to guest.
+      return json({ error: cause.userMessage }, {
+        status: cause.status,
+        headers: { "Retry-After": String(cause.retryAfterSeconds ?? 2) },
+      });
     }
     throw cause;
   }

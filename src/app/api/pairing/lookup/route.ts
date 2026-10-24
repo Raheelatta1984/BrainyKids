@@ -11,14 +11,13 @@ export const dynamic = "force-dynamic";
 
 /** Lets a parent check a code (typed in or opened from a QR link) before approving. */
 export const GET = route(async (req: NextRequest) => {
+  const code = normaliseCode(new URL(req.url).searchParams.get("code") ?? "");
+  if (!/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{6}$/.test(code)) return error("Enter the six-character code shown on your child's device.");
   const auth = await parentAuth(req);
   if (!auth) return error("Sign in as a parent first.", 401);
 
-  const code = normaliseCode(new URL(req.url).searchParams.get("code") ?? "");
-  if (!code) return error("Enter the code shown on your child's device.");
-
-  const doc = await store.read();
-  const pairing = doc.pairings.find((p) => p.code === code);
+  const found = await store.find("pairingCode", code);
+  const pairing = found?.record;
   if (!pairing) {
     const storage = store.info();
     void logBehaviour(
@@ -29,12 +28,12 @@ export const GET = route(async (req: NextRequest) => {
         vars: { code, found: false, status: "unknown", driver: storage.driver, durable: storage.durable },
         context: { code, storage: storage.driver, durable: storage.durable, location: storage.location },
       },
-      { throttleKey: `lookup-${code}` },
+      { throttleKey: `lookup-${auth.parent.id}` },
     ).catch(() => undefined);
     return json({ found: false, status: "unknown" });
   }
 
-  const view = pairingView(doc, pairing);
+  const view = pairingView(found!.doc, pairing);
   if (view.status !== "pending") {
     return json({ found: true, status: view.status, code: view.code, label: pairing.deviceLabel });
   }

@@ -32,10 +32,6 @@ function signupLimitError(decision: Extract<SignupLimitDecision, { allowed: fals
 }
 
 export const POST = route(async (req: NextRequest) => {
-  const clientKey = signupClientKey(req);
-  const attemptLimit = await store.mutate((doc) => consumeSignupAttempt(doc, clientKey));
-  if (!attemptLimit.allowed) return signupLimitError(attemptLimit);
-
   const body = await readBody(req);
   const name = str(body.name).trim();
   const email = normaliseEmail(str(body.email));
@@ -45,11 +41,16 @@ export const POST = route(async (req: NextRequest) => {
   if (!isValidEmail(email)) return error("Please enter a valid email address.");
   if (!isValidPassword(password)) return error(`Use a password with at least ${PASSWORD_MIN_LENGTH} characters.`);
 
+  const clientKey = signupClientKey(req);
   const token = newToken();
   // A code the parent can keep: it is the only way back into the account if the
   // password is forgotten, because BrainyKids does not send email.
   const recoveryCode = newRecoveryCode();
   const result = await store.mutate((doc) => {
+    // The front-door limiter counts malformed requests without a database hit.
+    // Persist valid-form quotas and account creation in ONE atomic transaction.
+    const attemptLimit = consumeSignupAttempt(doc, clientKey);
+    if (!attemptLimit.allowed) return { taken: false, limited: attemptLimit, parent: null, session: null };
     if (doc.parents.some((p) => p.email === email)) {
       return { taken: true, limited: null, parent: null, session: null };
     }

@@ -11,6 +11,9 @@ export const runtime = "nodejs";
  * credentials set up on this server and asks the device to unlock one of them.
  */
 export const POST = route(async (req: NextRequest) => {
+  if ((await store.read()).passkeys.length === 0) {
+    return json({ available: false, id: null, options: null });
+  }
   const { rpId } = relyingParty(req);
   const result = await store.mutate((doc) => {
     const challenge = createChallenge(doc, { purpose: "login" });

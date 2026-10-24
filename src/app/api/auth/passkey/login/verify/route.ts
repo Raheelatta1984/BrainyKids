@@ -24,6 +24,11 @@ export const POST = route(async (req: NextRequest) => {
   const credential = body.credential as WebAuthnResponse | undefined;
   if (!challengeId || !credential) return error("That request did not include a device response.");
 
+  const challenge = await store.find("challengeId", challengeId);
+  if (!challenge || challenge.record.purpose !== "login" || challenge.record.expiresAt <= Date.now()) {
+    return error("That sign-in attempt expired. Please try again.", 401);
+  }
+
   const { rpId, origins } = relyingParty(req);
   const label = deviceLabel(req.headers.get("user-agent"));
   const sessionToken = newToken();

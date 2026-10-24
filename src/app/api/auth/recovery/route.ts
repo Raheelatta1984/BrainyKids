@@ -10,6 +10,7 @@ import {
   PASSWORD_MIN_LENGTH,
   RECOVERY_LOCK_MS,
 } from "@/lib/server/recovery";
+import { protectIdentity } from "@/lib/server/request-protection";
 import { setParentSessionCookies } from "@/lib/server/session";
 import { sessionExpiry, store, trimSessions, type SessionRecord } from "@/lib/server/store";
 import { parentView } from "@/lib/server/views";
@@ -32,8 +33,15 @@ export const POST = route(async (req: NextRequest) => {
   const code = normaliseRecoveryCode(str(body.code));
   const password = str(body.password);
 
-  if (!email || !code) return error("Enter the email address and the recovery code.");
+  if (!email || !code || email.length > 254 || code.length > 128) return error("Enter the email address and the recovery code.");
   if (!isValidPassword(password)) return error(`Choose a new password with at least ${PASSWORD_MIN_LENGTH} characters.`);
+
+  await protectIdentity("recovery", email);
+  const candidate = await store.find("parentEmail", email);
+  if (!candidate?.record.recoveryHash) return error(MISMATCH, 401);
+  if ((candidate.record.recoveryLockedUntil ?? 0) > Date.now()) {
+    return error("Too many recovery attempts. Please wait 15 minutes and try again.", 401);
+  }
 
   const token = newToken();
   const nextCode = newRecoveryCode();

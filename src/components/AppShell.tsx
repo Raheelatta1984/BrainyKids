@@ -33,6 +33,7 @@ export default function AppShell() {
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const failures = useRef(0);
+  const heartbeatInFlight = useRef(false);
   const previousKids = useRef<number | null>(null);
   const previousRole = useRef<string | null>(null);
   // Remembered so a surprise sign-out can name the child in the behavioural log
@@ -107,11 +108,20 @@ export default function AppShell() {
   // device drops straight back to the sign-in screen.
   useEffect(() => {
     if (role !== "kid") return;
-    const id = setTimeout(() => void beat(role), 400);
-    const interval = setInterval(() => void beat(role), HEARTBEAT_MS);
+    const tick = () => {
+      if (heartbeatInFlight.current || document.visibilityState === "hidden" || !navigator.onLine) return;
+      heartbeatInFlight.current = true;
+      void beat(role).finally(() => { heartbeatInFlight.current = false; });
+    };
+    const id = setTimeout(tick, 400);
+    const interval = setInterval(tick, HEARTBEAT_MS);
+    document.addEventListener("visibilitychange", tick);
+    window.addEventListener("online", tick);
     return () => {
       clearTimeout(id);
       clearInterval(interval);
+      document.removeEventListener("visibilitychange", tick);
+      window.removeEventListener("online", tick);
     };
   }, [role, beat]);
 

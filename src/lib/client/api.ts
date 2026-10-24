@@ -14,52 +14,8 @@ import type {
   StorageState,
 } from "@/lib/types";
 
-export type ApiResult<T> =
-  | { ok: true; data: T }
-  | { ok: false; error: string; /** HTTP status when the server answered (-1 for a network failure). */ status: number };
-
-export type RequestOptions = { /** Set false for background calls that should not wake a sleeping server. */ keepalive?: boolean };
-
-async function request<T>(path: string, init?: RequestInit, options: RequestOptions = {}): Promise<ApiResult<T>> {
-  try {
-    const res = await fetch(path, {
-      credentials: "same-origin",
-      cache: "no-store",
-      keepalive: options.keepalive,
-      ...init,
-      headers: {
-        ...(init?.body ? { "content-type": "application/json" } : {}),
-        ...(init?.headers ?? {}),
-      },
-    });
-    const text = await res.text();
-    let data: Record<string, unknown> = {};
-    try {
-      data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-    } catch {
-      // A response that is not JSON (a proxy error page, for example).
-      data = {};
-    }
-    if (!res.ok) {
-      if (typeof data.error === "string") return { ok: false, error: data.error, status: res.status };
-      return {
-        ok: false,
-        error:
-          res.status >= 500
-            ? "BrainyKids could not finish that request. Please try again in a moment."
-            : `Something went wrong (${res.status}).`,
-        status: res.status,
-      };
-    }
-    return { ok: true, data: data as T };
-  } catch {
-    return {
-      ok: false,
-      error: "Could not reach the server. Check your connection and try again.",
-      status: -1,
-    };
-  }
-}
+import { request, type RequestOptions } from "./request";
+export type { ApiResult, RequestOptions } from "./request";
 
 export const api = {
   get: <T,>(path: string, options?: RequestOptions) => request<T>(path, undefined, options),
@@ -172,7 +128,7 @@ export const actions = {
   unlinkDevice: (id: string) => api.del<{ ok: true }>(`/api/devices/${id}`),
 
   pairingStart: (rotate = false) => api.post<PairingStart>(`/api/pairing/start${rotate ? "?rotate=1" : ""}`),
-  pairingStatus: (wait = false) => api.get<PairingStatusResponse>(`/api/pairing/status${wait ? "?wait=1" : ""}`),
+  pairingStatus: (wait = false, signal?: AbortSignal) => api.get<PairingStatusResponse>(`/api/pairing/status${wait ? "?wait=1" : ""}`, { signal }),
   pairingLookup: (code: string) =>
     api.get<{ found: boolean; status: string; code?: string; label?: string; expiresAt?: number }>(
       `/api/pairing/lookup?code=${encodeURIComponent(code)}`,
@@ -313,7 +269,7 @@ export function useLive(): Live {
     let reconnect: ReturnType<typeof setTimeout> | null = null;
 
     const connect = () => {
-      if (closed) return;
+      if (closed || source || document.visibilityState === "hidden" || !navigator.onLine) return;
       // Reconnecting with the latest cursor means no event is delivered twice.
       source = new EventSource(`/api/events?cursor=${cursor.current}`);
       streamRef.current = source;
@@ -351,18 +307,40 @@ export function useLive(): Live {
       source.addEventListener("error", () => {
         setConnected(false);
         source?.close();
+        source = null;
+        streamRef.current = null;
         if (closed) return;
         retries += 1;
         // Back off, but keep trying: the poll above covers the gap.
-        reconnect = setTimeout(connect, Math.min(30_000, 1_000 * 2 ** Math.min(retries, 5)));
+        reconnect = setTimeout(connect, Math.min(30_000, 1_000 * 2 ** Math.min(retries, 5)) * (0.8 + Math.random() * 0.4));
       });
     };
 
+    const visibilityChanged = () => {
+      if (document.visibilityState === "hidden" || !navigator.onLine) {
+        if (reconnect) clearTimeout(reconnect);
+        if (timer.current) { clearTimeout(timer.current); timer.current = null; }
+        source?.close();
+        source = null;
+        streamRef.current = null;
+        setConnected(false);
+      } else {
+        void refresh();
+        connect();
+      }
+    };
+    document.addEventListener("visibilitychange", visibilityChanged);
+    window.addEventListener("online", visibilityChanged);
+    window.addEventListener("offline", visibilityChanged);
     connect();
 
     return () => {
       closed = true;
+      document.removeEventListener("visibilitychange", visibilityChanged);
+      window.removeEventListener("online", visibilityChanged);
+      window.removeEventListener("offline", visibilityChanged);
       if (reconnect) clearTimeout(reconnect);
+      if (timer.current) { clearTimeout(timer.current); timer.current = null; }
       source?.close();
       streamRef.current = null;
       setConnected(false);
@@ -371,9 +349,11 @@ export function useLive(): Live {
 
   // Safety net: quick polls when the stream is down or in temporary storage, slow polls otherwise.
   useEffect(() => {
-    if (!role || role === "guest") return;
+    if (role === "guest") return;
     const period = connected && durable ? 15_000 : 4_000;
-    const id = setInterval(() => void refresh(), period);
+    const id = setInterval(() => {
+      if (document.visibilityState !== "hidden" && navigator.onLine) void refresh();
+    }, period);
     return () => clearInterval(id);
   }, [connected, durable, role, refresh]);
 

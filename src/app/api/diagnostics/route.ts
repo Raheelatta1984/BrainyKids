@@ -64,15 +64,17 @@ function cleanClient(value: unknown): BehaviourEntry["client"] | undefined {
  * then merges everything into the same log and the same review report.
  */
 export const POST = route(async (req: NextRequest) => {
+  const parent = await parentAuth(req);
+  const device = parent ? null : await deviceAuth(req);
+  // Guest telemetry remains in the browser console, not in the shared family
+  // document. Acknowledge/drop it so it cannot become an anonymous write API.
+  if (!parent && !device) return json({ ok: true, logged: 0 });
   const body = await readBody(req);
   const incoming = Array.isArray(body.events) ? body.events : [body];
   if (incoming.length === 0) return error("Nothing to log.");
   if (incoming.length > MAX_EVENTS_PER_REQUEST) return error("Too many events in one request.", 413);
 
   const doc = await store.read();
-  const parent = await parentAuth(req, doc);
-  const device = parent ? null : await deviceAuth(req, doc);
-
   const role: BehaviourEntry["role"] = parent ? "parent" : device ? "kid" : "guest";
   const parentId = parent?.parent.id ?? device?.kid.parentId ?? null;
   const settings = parentId ? settingsForParent(doc, parentId) : DEFAULT_SETTINGS;

@@ -52,10 +52,11 @@ export const POST = route(async (req: NextRequest) => {
 
   const now = Date.now();
   const cameOnline = !isOnline(auth.kid.lastSeenAt, now);
-  await store.mutate((doc) => {
+  // Multiple tabs/retries should not each rewrite the entire state document.
+  if (now - auth.device.lastSeenAt >= 15_000 || now - (auth.kid.lastSeenAt ?? 0) >= 15_000) await store.mutate((doc) => {
     const device = doc.devices.find((d) => d.id === auth.device.id);
     const kid = doc.kids.find((k) => k.id === auth.kid.id);
-    if (!kid) return;
+    if (!kid || !device || device.tokenHash !== auth.device.tokenHash) return;
     if (device) device.lastSeenAt = now;
     const changed = touchKid(kid);
     if (changed && cameOnline) {
