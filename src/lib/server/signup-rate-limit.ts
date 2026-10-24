@@ -1,5 +1,5 @@
-import { isIP } from "node:net";
 import { hashForStorage } from "./auth";
+import { clientAddress } from "./client-identity";
 import type { DbDoc, SignupRateLimitRecord } from "./store";
 
 /** A burst limit for malformed, duplicate and successful signup requests alike. */
@@ -28,10 +28,7 @@ const ALLOWED: SignupLimitDecision = { allowed: true, retryAfterSeconds: 0 };
  * internet connection.
  */
 export function signupClientKey(req: Request): string {
-  const forwarded = req.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim();
-  const realIp = req.headers.get("x-real-ip")?.trim();
-  const address = [forwarded, realIp].find((candidate) => candidate && isIP(candidate))?.toLowerCase() ?? "unknown";
-  return hashForStorage("signup-rate-limit", address);
+  return hashForStorage("signup-rate-limit", clientAddress(req));
 }
 
 function ensureBuckets(doc: DbDoc): SignupRateLimitRecord[] {

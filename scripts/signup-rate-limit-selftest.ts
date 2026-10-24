@@ -24,6 +24,8 @@ function check(name: string, ok: boolean, detail = ""): void {
 }
 
 const base = 1_800_000_000_000;
+// Forwarded headers are only authoritative behind a sanitising proxy.
+process.env.BRAINYKIDS_TRUST_PROXY = "true";
 
 console.log("\nSignup attempts: bounded burst window");
 {

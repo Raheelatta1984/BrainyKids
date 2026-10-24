@@ -66,18 +66,25 @@ parent and kid sign-in, QR device linking and realtime progress updates.
   address and are removed again from the same dashboard card.
 - **Changing the password** from the dashboard signs out every other device and
   replaces the recovery code.
-- **Signup abuse prevention.** The server allows up to 10 signup requests per
-  client address in 15 minutes and up to 3 newly created accounts from that
-  address in a rolling 24 hours. Client-limit responses return HTTP `429` with
-  a `Retry-After` header; the endpoint fails closed with `503` if its bounded
-  tracker is full. Invalid and duplicate attempts count toward the short
-  burst limit; only accounts actually created count toward the daily limit.
-  Client addresses are stored as keyed HMACs, not as raw IP addresses. The
-  deployment proxy must set or sanitise `X-Forwarded-For` / `X-Real-IP`. On a
-  multi-instance deployment, configure `DATABASE_URL` so the limits are shared
-  and atomic across instances. This reduces automated signup spam; it is not a
-  substitute for a WAF/edge rate limit, email verification, or malware scanning,
-  and it cannot stop a distributed denial-of-service attack by itself.
+- **Signup abuse prevention.** Invalid and duplicate requests consume a
+  database-free front-door burst budget (10, refilling over 15 minutes). Valid
+  forms additionally use atomic stored limits: 10 attempts per rolling 15
+  minutes and 3 actual creations per rolling 24 hours per client network.
+  `429` replies include `Retry-After`; full trackers fail closed with `503`.
+  Source keys are HMACs rather than raw IP addresses. Vercel proxy trust is
+  automatic; elsewhere set `BRAINYKIDS_TRUST_PROXY=true` only behind a trusted
+  proxy that overwrites forwarding headers. Durable signup quotas require
+  shared Postgres in a multi-instance deployment; configure Memcached for
+  aggregate front-door quotas too. These controls complement, not replace,
+  an edge/WAF limit and cannot stop distributed denial of service by themselves.
+- **Request/database load protection.** All APIs have network/category limits,
+  with tighter login/PIN/recovery target budgets, bounded stream connections,
+  early byte-sized payload checks, negative lookup caches, snapshot-safe Bloom
+  filters, coalesced reads, and a storage-failure cooldown. Failed logins no
+  longer write the whole state document. The browser honours retry delays and
+  pauses background traffic in hidden tabs. See
+  [request protection and deployment settings](docs/request-protection.md)
+  for defaults, shared-cache failure policy, cache freshness and tests.
 
 ### Master settings (language, curriculum, date, time, voice)
 
@@ -424,8 +431,11 @@ settings add connection/read scaling without changing the persistence model:
   endpoint list; optional SASL credentials are `MEMCACHED_USERNAME` and
   `MEMCACHED_PASSWORD`. The cache is an expendable read-through cache with a
   short two-second default TTL (`MEMCACHED_TTL_SECONDS`, capped at 60 seconds),
-  never the source of truth. Cache failures do not fail application reads or
-  database commits. The family document is cached as one item, so deployments
+  never the source of truth. State-cache failures do not fail ordinary reads or
+  database commits. The same optional service supplies atomic request counters;
+  sensitive auth/pairing requests fail closed if that configured protection
+  service is unavailable (see [failure policy](docs/request-protection.md)).
+  The family document is cached as one item, so deployments
   should keep it below the Memcached server's item-size limit.
 
 The app has a 64-bit sortable ID generator (`src/lib/server/ids.ts`) with a

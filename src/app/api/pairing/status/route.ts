@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import type { NextRequest } from "next/server";
 import { COOKIES, tokenHash } from "@/lib/server/auth";
 import { json, route } from "@/lib/server/http";
@@ -26,9 +27,13 @@ export const GET = route(async (req: NextRequest) => {
   const storage = store.info();
 
   let check = await checkPairing(req);
-  while (check.status === "pending" && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    check = await checkPairing(req);
+  while (check.status === "pending" && Date.now() < deadline && !req.signal.aborted) {
+    try {
+      await delay(Math.min(1_200, Math.max(0, deadline - Date.now())), undefined, { signal: req.signal });
+    } catch {
+      break; // An abandoned tab must not keep polling the database.
+    }
+    if (!req.signal.aborted) check = await checkPairing(req);
   }
 
   if (check.status !== "approved") {

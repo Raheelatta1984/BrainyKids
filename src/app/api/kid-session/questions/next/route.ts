@@ -22,6 +22,12 @@ export const POST = route(async (req: NextRequest) => {
     return error(`Pick a level between 1 and ${MAX_LEVEL}.`);
   }
 
+  const active = auth.kid.activeQuestionsByLevel?.[String(level)];
+  if (active) {
+    const { answer, explain, ...question } = active;
+    return json({ question, progress: levelProgress(auth.kid, level as Level) });
+  }
+
   const outcome = await store.mutate((doc) => {
     const kid = doc.kids.find((item) => item.id === auth.kid.id);
     if (!kid) return null;

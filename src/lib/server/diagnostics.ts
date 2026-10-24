@@ -17,6 +17,7 @@ import {
 } from "@/lib/behaviour";
 import { DEFAULT_SETTINGS, resolveSettings } from "@/lib/settings";
 import type { BehaviourEntry, FamilySettings } from "@/lib/types";
+import { TtlCache } from "./ttl-cache";
 import { appendBehaviour, pushEvent, settingsFor, store, writableDataDir, type DbDoc, type StorageInfo } from "./store";
 
 const LOG_FILE = "behaviour.jsonl";
@@ -25,17 +26,12 @@ const ARCHIVES_KEPT = 2;
 
 /** Repeated identical events (a flaky connection, say) are collapsed to one line per window. */
 const THROTTLE_MS = 30_000;
-const recent = new Map<string, number>();
+const recent = new TtlCache<true>(2_000);
 
 function throttled(code: string, key: string, windowMs = THROTTLE_MS): boolean {
   const id = `${code}:${key}`;
-  const now = Date.now();
-  const last = recent.get(id);
-  if (last && now - last < windowMs) return true;
-  recent.set(id, now);
-  if (recent.size > 500) {
-    for (const [id, at] of recent) if (now - at > 10 * 60_000) recent.delete(id);
-  }
+  if (recent.get(id)) return true;
+  recent.set(id, true, windowMs);
   return false;
 }
 

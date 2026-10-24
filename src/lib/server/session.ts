@@ -1,7 +1,7 @@
 import type { NextRequest, NextResponse } from "next/server";
-import { COOKIES, cookieOptions, normaliseCode, signPayload, tokenHash, verifyPayload } from "./auth";
+import { COOKIES, cookieOptions, normaliseCode, tokenHash } from "./auth";
 import { DEVICE_DAYS, PARENT_SESSION_DAYS } from "./constants";
-import { isKidDeleted, store, type DbDoc, type DeviceRecord, type KidRecord, type ParentRecord, type PairingRecord, type SessionRecord } from "./store";
+import { store, type DbDoc, type DeviceRecord, type KidRecord, type ParentRecord, type PairingRecord, type SessionRecord } from "./store";
 
 export type ParentAuth = { parent: ParentRecord; session: SessionRecord };
 export type DeviceAuth = {
@@ -9,11 +9,7 @@ export type DeviceAuth = {
   kid: KidRecord;
 };
 
-/**
- * Sets both the parent session cookie and a signed backup cookie so that on a
- * read-only serverless host without a database attached yet, a fresh lambda
- * instance can still recognise the signed-in parent instead of returning 401.
- */
+/** Sets the opaque parent bearer cookie; authentication always checks the store. */
 export function setParentSessionCookies(
   res: NextResponse,
   token: string,
@@ -30,12 +26,14 @@ export function clearParentSessionCookies(res: NextResponse) {
 
 export async function parentAuth(req: NextRequest, doc?: DbDoc): Promise<ParentAuth | null> {
   const raw = req.cookies.get(COOKIES.parent)?.value;
-  if (!raw) return null;
+  if (!raw || !/^[A-Za-z0-9_-]{43}$/.test(raw)) return null;
   const hash = tokenHash(raw);
-  const current = doc ?? (await store.read());
+  const found = doc ? null : await store.find("parentSession", hash);
+  const current = doc ?? found?.doc;
+  if (!current) return null;
   const now = Date.now();
-  const session = current.sessions.find((s) => s.tokenHash === hash && s.expiresAt > now);
-  if (session) {
+  const session = doc ? current.sessions.find((s) => s.tokenHash === hash) : found?.record;
+  if (session && session.expiresAt > now) {
     const parent = current.parents.find((p) => p.id === session.parentId);
     if (parent) return { parent, session };
   }
@@ -43,9 +41,7 @@ export async function parentAuth(req: NextRequest, doc?: DbDoc): Promise<ParentA
   return null;
 }
 
-
-
-/** Sets the device cookie *and* the signed backup, so a wiped server can recover the link. */
+/** Sets the opaque device bearer cookie; no client-side identity backup is trusted. */
 export function setDeviceSessionCookies(
   res: NextResponse,
   token: string,
@@ -64,13 +60,16 @@ export function clearDeviceSessionCookies(res: NextResponse, req?: Request | nul
 
 export async function deviceAuth(req: NextRequest, doc?: DbDoc): Promise<DeviceAuth | null> {
   const raw = req.cookies.get(COOKIES.device)?.value;
-  if (!raw) return null;
+  if (!raw || !/^[A-Za-z0-9_-]{43}$/.test(raw)) return null;
   const hash = tokenHash(raw);
-  const current = doc ?? (await store.read());
+  const found = doc ? null : await store.find("deviceToken", hash);
+  const current = doc ?? found?.doc;
+  if (!current) return null;
   const now = Date.now();
   const maxAgeMs = DEVICE_DAYS * 24 * 60 * 60 * 1000;
   
-  const device = current.devices.find((d) => d.tokenHash === hash && (now - d.createdAt) <= maxAgeMs);
+  const device = doc ? current.devices.find((d) => d.tokenHash === hash) : found?.record;
+  if (!device || now - device.createdAt > maxAgeMs) return null;
   const kid = device ? current.kids.find((k) => k.id === device.kidId) : undefined;
   if (device && kid) return { device, kid };
 
@@ -81,9 +80,11 @@ export async function deviceAuth(req: NextRequest, doc?: DbDoc): Promise<DeviceA
 export function pairingCredentials(req: NextRequest): { code: string; secret: string } | null {
   const raw = req.cookies.get(COOKIES.pairing)?.value;
   if (!raw) return null;
-  const [code, secret] = raw.split(".");
-  if (!code || !secret) return null;
-  return { code: normaliseCode(code), secret };
+  const parts = raw.split(".");
+  const code = normaliseCode(parts[0] ?? "");
+  const secret = parts[1];
+  if (parts.length !== 2 || !/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{6}$/.test(code) || !/^[A-Za-z0-9_-]{43}$/.test(secret ?? "")) return null;
+  return { code, secret };
 }
 
 export function findPairing(doc: DbDoc, credentials: { code: string; secret: string }): PairingRecord | null {

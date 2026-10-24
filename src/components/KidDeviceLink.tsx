@@ -134,21 +134,26 @@ export default function KidDeviceLink({
   // Renew a little before the code runs out, so the parent is never left with a
   // expired QR code on the child's screen.
   useEffect(() => {
-    if (phase !== "waiting") return;
+    if (phase !== "waiting" || document.visibilityState === "hidden" || !navigator.onLine) return;
     if (secondsLeft > 45) return;
     if (renewals.current >= 20) return;
     void startPairing(true, `only ${secondsLeft}s left on ${code}`);
   }, [phase, secondsLeft, code, startPairing]);
 
-  // Wait for a parent: each call long-polls for up to 20 seconds.
+  // Wait for a parent: each call long-polls for up to eight seconds.
   useEffect(() => {
     if (phase !== "waiting") return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let failures = 0;
+    const controller = new AbortController();
 
     const poll = async () => {
-      const result = await actions.pairingStatus(true);
+      if (document.visibilityState === "hidden" || !navigator.onLine) {
+        timer = setTimeout(() => void poll(), 2_000);
+        return;
+      }
+      const result = await actions.pairingStatus(true, controller.signal);
       if (cancelled) return;
       if (result.ok) {
         if (result.data.status === "approved") {
@@ -176,12 +181,13 @@ export default function KidDeviceLink({
       }
       failures += 1;
       reportBehaviour("pairing.record_missing", { code: currentCode.current || "-", reason: result.error });
-      timer = setTimeout(() => void poll(), Math.min(5_000, 800 * failures));
+      timer = setTimeout(() => void poll(), Math.max((result.retryAfterSeconds ?? 0) * 1_000, Math.min(30_000, 800 * 2 ** Math.min(failures, 5))) * (1 + Math.random() * 0.2));
     };
 
     timer = setTimeout(() => void poll(), 1200);
     return () => {
       cancelled = true;
+      controller.abort();
       if (timer) clearTimeout(timer);
     };
   }, [phase, code, expiresAt, onLinked, startPairing]);

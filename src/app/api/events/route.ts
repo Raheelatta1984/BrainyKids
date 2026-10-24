@@ -6,7 +6,7 @@ import { eventsSince, store, type EventRecord } from "@/lib/server/store";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const POLL_MS = 1_200;
+const POLL_MS = 2_000;
 const KEEPALIVE_MS = 8_000;
 /** Close cleanly before serverless function timeouts so EventSource reconnects smoothly. */
 const STREAM_MAX_MS = 18_000;
@@ -20,11 +20,11 @@ const STREAM_MAX_MS = 18_000;
  * browser client falls back to polling /api/snapshot.
  */
 export const GET = route(async (req: NextRequest) => {
-  const doc = await store.read();
-  const parent = await parentAuth(req, doc);
-  const device = parent ? null : await deviceAuth(req, doc);
+  const parent = await parentAuth(req);
+  const device = parent ? null : await deviceAuth(req);
 
   if (!parent && !device) return error("Not signed in.", 401);
+  const doc = await store.read();
   const scope = parent
     ? { parentId: parent.parent.id, includeUnclaimed: doc.parents.length <= 1 }
     : { parentId: device!.kid.parentId, kidId: device!.kid.id };
@@ -38,14 +38,17 @@ export const GET = route(async (req: NextRequest) => {
   let keepalive: ReturnType<typeof setInterval> | null = null;
   let lifetime: ReturnType<typeof setTimeout> | null = null;
 
+  let closeStream = () => {};
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
+      let pumping = false;
 
       const cleanup = () => {
         if (interval) clearInterval(interval);
         if (keepalive) clearInterval(keepalive);
         if (lifetime) clearTimeout(lifetime);
+        req.signal.removeEventListener("abort", close);
         interval = null;
         keepalive = null;
         lifetime = null;
@@ -72,7 +75,11 @@ export const GET = route(async (req: NextRequest) => {
         }
       };
 
+      closeStream = close;
+
       const pump = async () => {
+        if (closed || pumping) return;
+        pumping = true;
         try {
           const current = await store.read();
           const stillParent = await parentAuth(req, current);
@@ -104,6 +111,8 @@ export const GET = route(async (req: NextRequest) => {
           }
         } catch {
           send("ping", {});
+        } finally {
+          pumping = false;
         }
       };
 
@@ -120,16 +129,10 @@ export const GET = route(async (req: NextRequest) => {
         lifetime = setTimeout(() => close(), STREAM_MAX_MS);
       }
 
-      req.signal.addEventListener("abort", () => {
-        closed = true;
-        cleanup();
-      });
+      req.signal.addEventListener("abort", close, { once: true });
+      if (req.signal.aborted) close();
     },
-    cancel() {
-      if (interval) clearInterval(interval);
-      if (keepalive) clearInterval(keepalive);
-      if (lifetime) clearTimeout(lifetime);
-    },
+    cancel() { closeStream(); },
   });
 
   return new Response(stream, {

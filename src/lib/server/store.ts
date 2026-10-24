@@ -21,6 +21,8 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { next_id } from "./ids";
+import { SnapshotLookup, type LookupKind, type LookupRecords } from "./lookup-cache";
+import { getSharedCache } from "./memcached";
 import type { BehaviourEntry, CurriculumCountry, EducationStage, FamilySettings, Gender, Level, RewardLedgerEntry, StorageState, Theme } from "@/lib/types";
 import type { Question } from "@/lib/quiz-data";
 
@@ -28,12 +30,14 @@ import type { Question } from "@/lib/quiz-data";
 export class StorageError extends Error {
   readonly userMessage: string;
   readonly status: number;
+  readonly retryAfterSeconds?: number;
 
-  constructor(userMessage: string, options: { status?: number; detail?: string; cause?: unknown } = {}) {
+  constructor(userMessage: string, options: { status?: number; detail?: string; cause?: unknown; retryAfterSeconds?: number } = {}) {
     super(options.detail ?? userMessage, { cause: options.cause });
     this.name = "StorageError";
     this.userMessage = userMessage;
     this.status = options.status ?? 503;
+    this.retryAfterSeconds = options.retryAfterSeconds;
   }
 }
 
@@ -480,11 +484,9 @@ export function normaliseDatabaseConfig(rawInput: string): NormalisedDatabaseCon
 /** Where the data lives, described in a way that is safe to show in the UI. */
 export type StorageInfo = StorageState;
 
-type Driver = {
+export type Driver = {
   name: "file" | "postgres";
-  /** Milliseconds an in-memory read may be reused. File storage is written by
-   *  this process only, so it can cache indefinitely; Postgres may be written by
-   *  another instance, so it re-reads often. */
+  /** Milliseconds an in-memory snapshot (including negative lookups) may be reused. */
   cacheTtl: number;
   load: () => Promise<DbDoc | null>;
   save: (doc: DbDoc) => Promise<void>;
@@ -585,7 +587,7 @@ function fileDriver(): Driver {
 
   return {
     name: "file",
-    cacheTtl: usingFallback ? 1_000 : Number.POSITIVE_INFINITY,
+    cacheTtl: 1_000,
     async load() {
       try {
         return await readFrom(dir);
@@ -688,21 +690,14 @@ function postgresDriver(rawConnectionString: string, envVar = "DATABASE_URL"): D
     query: (text: string, values?: unknown[]) => Promise<{ rows: { doc: DbDoc }[] }>;
     connect: () => Promise<ClientLike>;
   };
-  type MemcachedClient = {
-    get: (key: string, callback: (error: Error | null, value: Buffer | null) => void) => void;
-    set: (key: string, value: string, options: { expires: number }, callback: (error: Error | null) => void) => void;
-  };
-
   const config = normaliseDatabaseConfig(rawConnectionString);
   const readUrl = process.env.DATABASE_READ_URL?.trim() || process.env.POSTGRES_READ_URL?.trim();
   const readConfig = readUrl ? normaliseDatabaseConfig(readUrl) : null;
-  const memcachedServers = process.env.MEMCACHED_SERVERS?.trim();
   const memcachedTtl = Math.min(60, Math.max(1, Number.parseInt(process.env.MEMCACHED_TTL_SECONDS ?? "2", 10) || 2));
   const cacheNamespace = createHash("sha256").update(config.connectionString).digest("hex").slice(0, 16);
   const cacheKey = process.env.MEMCACHED_KEY?.trim() || `brainykids:state:v1:${cacheNamespace}`;
   let poolPromise: Promise<PoolLike> | null = null;
   let readPoolPromise: Promise<PoolLike> | null = null;
-  let memcachedPromise: Promise<MemcachedClient | null> | null = null;
 
   async function createPool(
     connectionString: string,
@@ -777,38 +772,11 @@ function postgresDriver(rawConnectionString: string, envVar = "DATABASE_URL"): D
     return readPoolPromise;
   }
 
-  async function memcached(): Promise<MemcachedClient | null> {
-    if (!memcachedServers) return null;
-    if (!memcachedPromise) {
-      memcachedPromise = (async () => {
-        const mod = (await import("memjs")) as unknown as {
-          Client?: { create: (servers: string, options?: Record<string, unknown>) => MemcachedClient };
-          default?: { Client: { create: (servers: string, options?: Record<string, unknown>) => MemcachedClient } };
-        };
-        const create = mod.Client?.create ?? mod.default?.Client.create;
-        if (!create) throw new Error("memjs client unavailable");
-        return create(memcachedServers, {
-          username: process.env.MEMCACHED_USERNAME || process.env.MEMCACHIER_USERNAME,
-          password: process.env.MEMCACHED_PASSWORD || process.env.MEMCACHIER_PASSWORD,
-          timeout: 1,
-          conntimeout: 1,
-        });
-      })().catch((error) => {
-        memcachedPromise = null;
-        console.warn("[brainykids] Memcached unavailable; using Postgres directly.", error);
-        return null;
-      });
-    }
-    return memcachedPromise;
-  }
-
   async function getCachedDoc(): Promise<DbDoc | null> {
     try {
-      const client = await memcached();
+      const client = await getSharedCache();
       if (!client) return null;
-      const result = await new Promise<Buffer | null>((resolve, reject) => {
-        client.get(cacheKey, (error, value) => error ? reject(error) : resolve(value));
-      });
+      const result = await client.get(cacheKey);
       return result ? normaliseDoc(JSON.parse(result.toString("utf8")) as DbDoc) : null;
     } catch {
       return null;
@@ -817,11 +785,13 @@ function postgresDriver(rawConnectionString: string, envVar = "DATABASE_URL"): D
 
   async function cacheDoc(doc: DbDoc): Promise<void> {
     try {
-      const client = await memcached();
+      const client = await getSharedCache();
       if (!client) return;
-      await new Promise<void>((resolve, reject) => {
-        client.set(cacheKey, JSON.stringify(doc), { expires: memcachedTtl }, (error) => error ? reject(error) : resolve());
-      });
+      const serialized = JSON.stringify(doc);
+      // Memcached commonly defaults to a 1 MiB item limit. Leave headroom and
+      // avoid repeatedly sending an oversized, expendable state-cache item.
+      if (Buffer.byteLength(serialized, "utf8") > 900_000) return;
+      await client.set(cacheKey, serialized, memcachedTtl);
     } catch {
       // Cache failures must never turn a successful database commit into an error.
     }
@@ -935,53 +905,118 @@ function postgresDriver(rawConnectionString: string, envVar = "DATABASE_URL"): D
 
 type StoreGlobal = { __brainyKidsStore?: Store; __brainyKidsStoreKey?: string };
 
-class Store {
+export type StoreOptions = {
+  now?: () => number;
+  failureCooldownMs?: number;
+  maxPendingWrites?: number;
+};
+
+export class Store {
   private cache: DbDoc | null = null;
   private cacheAt = 0;
+  private lookup: { doc: DbDoc; index: SnapshotLookup } | null = null;
+  private inFlightRead: Promise<DbDoc> | null = null;
+  private revision = 0;
   private queue: Promise<unknown> = Promise.resolve();
+  private pendingWrites = 0;
+  private failure: StorageError | null = null;
+  private retryAt = 0;
 
-  constructor(private driver: Driver) {}
+  constructor(private driver: Driver, private options: StoreOptions = {}) {}
 
-  get driverName() {
-    return this.driver.name;
+  private now(): number { return this.options.now?.() ?? Date.now(); }
+
+  get driverName() { return this.driver.name; }
+
+  info(): StorageInfo { return this.driver.info(); }
+
+  private assertAvailable(): void {
+    if (this.failure && this.now() < this.retryAt) {
+      throw new StorageError(this.failure.userMessage, {
+        cause: this.failure,
+        retryAfterSeconds: Math.max(1, Math.ceil((this.retryAt - this.now()) / 1000)),
+      });
+    }
   }
 
-  /** Says where the data is kept, so the UI can warn when it is not permanent. */
-  info(): StorageInfo {
-    return this.driver.info();
-  }
-
-  /** Read the document. Safe to call on every request. */
-  async read(): Promise<DbDoc> {
-    const now = Date.now();
-    if (this.cache && now - this.cacheAt < this.driver.cacheTtl) return this.cache;
-    const loaded = await this.driver.load();
-    this.cache = loaded ?? emptyDoc();
-    this.cacheAt = now;
-    return this.cache;
-  }
-
-  /** Read, change and persist the document. Serialised per process and locked in Postgres. */
-  async mutate<T>(fn: (doc: DbDoc) => T | Promise<T>): Promise<T> {
-    const run = this.queue.then(async () => {
-      if (this.driver.transact) {
-        const { doc, result } = await this.driver.transact(fn);
-        this.cache = doc;
-        this.cacheAt = Date.now();
-        return result;
-      }
-      // File driver: start from a fresh copy on disk, apply changes, and save.
-      const fresh = normaliseDoc((await this.driver.load()) ?? emptyDoc());
-      const result = await fn(fresh);
-      await this.driver.save(fresh);
-      this.cache = fresh;
-      this.cacheAt = Date.now();
-      return result;
+  private noteFailure(cause: unknown): unknown {
+    if (!(cause instanceof StorageError) || cause.status < 500) return cause;
+    this.failure = cause;
+    this.retryAt = this.now() + (this.options.failureCooldownMs ?? 2_000);
+    return new StorageError(cause.userMessage, {
+      status: cause.status, detail: cause.message, cause,
+      retryAfterSeconds: Math.max(1, Math.ceil((this.retryAt - this.now()) / 1000)),
     });
-    this.queue = run.then(
-      () => undefined,
-      () => undefined,
-    );
+  }
+
+  private publish(doc: DbDoc): void {
+    this.cache = doc;
+    this.cacheAt = this.now();
+    this.lookup = null; // Both misses and Bloom filters are snapshot-specific.
+    this.failure = null;
+    this.retryAt = 0;
+  }
+
+  /** One backend load for all concurrent readers; never serve expired data on error. */
+  async read(): Promise<DbDoc> {
+    if (this.cache && this.now() - this.cacheAt < this.driver.cacheTtl) return this.cache;
+    this.assertAvailable();
+    if (this.inFlightRead) return this.inFlightRead;
+    const revision = this.revision;
+    const pending = (async () => {
+      try {
+        const loaded = (await this.driver.load()) ?? emptyDoc();
+        // A slow read that started before a successful write must not replace
+        // the committed snapshot or resurrect a revoked session/negative miss.
+        if (revision !== this.revision && this.cache) return this.cache;
+        this.publish(loaded);
+        return loaded;
+      } catch (cause) {
+        if (revision !== this.revision && this.cache) return this.cache;
+        throw this.noteFailure(cause);
+      }
+    })().finally(() => {
+      if (this.inFlightRead === pending) this.inFlightRead = null;
+    });
+    this.inFlightRead = pending;
+    return pending;
+  }
+
+  /** Missing accounts/tokens/codes never need a write transaction. */
+  async find<K extends LookupKind>(kind: K, value: string): Promise<{ doc: DbDoc; record: LookupRecords[K] } | null> {
+    const doc = await this.read();
+    if (!this.lookup || this.lookup.doc !== doc) this.lookup = { doc, index: new SnapshotLookup(doc) };
+    const record = this.lookup.index.find(kind, value);
+    return record ? { doc, record } : null;
+  }
+
+  /** Bounded, serialised writes. Transactions still use the primary row lock. */
+  async mutate<T>(fn: (doc: DbDoc) => T | Promise<T>): Promise<T> {
+    this.assertAvailable();
+    if (this.pendingWrites >= (this.options.maxPendingWrites ?? 64)) {
+      throw new StorageError("The server is busy. Please try again shortly.", { retryAfterSeconds: 1 });
+    }
+    this.pendingWrites += 1;
+    const run = this.queue.then(async () => {
+      this.assertAvailable();
+      try {
+        let doc: DbDoc;
+        let result: T;
+        if (this.driver.transact) {
+          ({ doc, result } = await this.driver.transact(fn));
+        } else {
+          doc = normaliseDoc((await this.driver.load()) ?? emptyDoc());
+          result = await fn(doc);
+          await this.driver.save(doc);
+        }
+        this.revision += 1;
+        this.publish(doc);
+        return result;
+      } catch (cause) {
+        throw this.noteFailure(cause);
+      }
+    }).finally(() => { this.pendingWrites -= 1; });
+    this.queue = run.then(() => undefined, () => undefined);
     return run;
   }
 }
@@ -1006,6 +1041,7 @@ export function getStore(): Store {
 
 export const store = {
   read: () => getStore().read(),
+  find: <K extends LookupKind>(kind: K, value: string) => getStore().find(kind, value),
   mutate: <T>(fn: (doc: DbDoc) => T | Promise<T>) => getStore().mutate(fn),
   driverName: () => getStore().driverName,
   info: () => getStore().info(),
