@@ -14,6 +14,12 @@ export const viewport: Viewport = {
   themeColor: "#3b5bdb",
 };
 
+// The CSP in `src/middleware.ts` carries a per-request nonce, and Next.js only
+// tags its inline hydration scripts with that nonce when the page is rendered for
+// the request (static pages are prerendered at build time, when no nonce exists).
+// Rendering the shell per request is what makes the nonce-based policy enforceable.
+export const dynamic = "force-dynamic";
+
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">

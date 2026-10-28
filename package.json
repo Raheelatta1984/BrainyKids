@@ -14,7 +14,7 @@
     "scaling-selftest": "tsx scripts/scaling-selftest.ts",
     "behaviour:report": "tsx scripts/behaviour-report.ts",
     "reset-password": "node scripts/reset-password.mjs",
-    "protection-selftest": "tsx scripts/request-protection-selftest.ts && tsx scripts/request-routes-selftest.ts && tsx scripts/client-request-selftest.ts",
+    "protection-selftest": "tsx scripts/request-protection-selftest.ts && tsx scripts/request-routes-selftest.ts && tsx scripts/client-request-selftest.ts && tsx scripts/security-headers-selftest.ts",
     "test": "npm run selftest && npm run levels-selftest && npm run quiz-selftest && npm run signup-selftest && npm run scaling-selftest && npm run protection-selftest"
   },
   "dependencies": {
