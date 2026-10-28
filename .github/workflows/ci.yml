@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only by default; the jobs below never need to write back.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test, lint, type-check, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      # Deterministic install straight from the committed lockfile.
+      - run: npm ci
+      - run: npm run test
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Fails the build on High/Critical advisories only; accepted moderate
+      # exceptions (dev-only tooling) do not block.
+      - run: npm audit --audit-level=high
+
+  storage-guard:
+    name: Credential-storage & secret guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: No credentials in browser-readable web storage
+        run: |
+          matches=$(grep -rniE --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build --exclude-dir=.next \
+            '(localStorage|sessionStorage)\.(setItem|getItem)[[:space:]]*\([^,)]{0,40}(token|jwt|auth|secret|api[_-]?key|credential|refresh|id_token|access)' \
+            src 2>/dev/null | grep -vFf .security-storage-allowlist || true)
+          if [ -n "$matches" ]; then
+            echo "$matches"
+            echo "FAIL: credentials must not be stored in web storage; use an HttpOnly cookie."
+            exit 1
+          fi
+          echo "OK: no credentials in web storage."
+
+      - name: No real environment files are tracked
+        run: |
+          tracked=$(git ls-files | grep -iE '(^|/)\.env($|\.)' | grep -viE 'example|sample|template' || true)
+          if [ -n "$tracked" ]; then
+            echo "$tracked"
+            echo "FAIL: .env files must not be committed; only .env.example is tracked."
+            exit 1
+          fi
+          echo "OK: no tracked .env files."

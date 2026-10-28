@@ -1,0 +1,5 @@
+# Allowlist for the "no credentials in web storage" CI guard.
+#
+# Lines here are exact file paths (relative to the repo root) that are permitted to
+# mention a credential-shaped storage key. Every other match fails the build. Keep
+# this list empty unless a vendor SDK forces a documented, reviewed exception.

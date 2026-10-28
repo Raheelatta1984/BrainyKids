@@ -1,0 +1,20 @@
+# Dependency updates keep the lockfile honest. Dependabot is the only updater here;
+# there is no Renovate configuration in this repository.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      # Keep patch/minor churn in one reviewable PR; never batch majors.
+      dev-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "version-update:semver-major"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
